@@ -150,7 +150,9 @@ static bool repack_map_split(const char *log_prefix, const char *path,
         }
         s.base = total;
         s.size = (uint64_t)st.st_size;
+#ifndef _WIN32
         if (st.st_blksize > 1) s.direct_align = (uint64_t)st.st_blksize;
+#endif
         s.direct_fd = repack_open_direct_fd(s.fd, s.direct_align);
         direct = direct || s.direct_fd >= 0;
         const uint64_t span = repack_align_up(s.size, page);
@@ -222,7 +224,9 @@ bool ds4_repack_map_file(const char *log_prefix, const char *path, ds4_repack_fi
         return false;
     }
     m.size = (uint64_t)st.st_size;
+#ifndef _WIN32
     if (st.st_blksize > 1) m.direct_align = (uint64_t)st.st_blksize;
+#endif
     void *p = mmap(NULL, (size_t)m.size, PROT_READ, MAP_SHARED, m.fd, 0);
     if (p == MAP_FAILED) {
         fprintf(stderr, "%s: mmap failed %s: %s\n", log_prefix, path, strerror(errno));

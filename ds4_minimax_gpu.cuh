@@ -35,7 +35,7 @@ enum { MM_EXPERTS = DS4_MINIMAX_EXPERTS, MM_TABLE = 3 * MM_EXPERTS, MM_LAYERS = 
        MM_BLOCK = DS4_MINIMAX_BLOCK, MM_TOPK = DS4_MINIMAX_TOPK, MM_FP4_DATA = DS4_MINIMAX_FP4_DATA,
        MM_FP4_ROW = DS4_MINIMAX_FP4_ROW, MM_PAGE = DS4_MINIMAX_KV_PAGE, MM_SPLITS = DS4_MINIMAX_SPLITS };
 static_assert(MM_TOPK * MM_BLOCK == 2048, "MSA attends 16 blocks of 128 tokens");
-static const float MM_EPS = 1e-6f;
+static constexpr float MM_EPS = 1e-6f;
 
 static uint64_t mm_align(uint64_t bytes) { return (bytes + MM_ALIGN - 1) / MM_ALIGN * MM_ALIGN; }
 

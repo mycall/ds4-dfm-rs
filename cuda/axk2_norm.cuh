@@ -5,7 +5,7 @@
 #include "../ds4_axk2.h"
 #include <cuda_pipeline.h>
 
-static const float AX_EPS = 1e-6f;
+static constexpr float AX_EPS = 1e-6f;
 enum { AX_ROW_THREADS = 256, AX_ROW_VALUES = DS4_AXK2_HIDDEN / AX_ROW_THREADS, AX_ROW_WARPS = AX_ROW_THREADS / 32 };
 static_assert(DS4_AXK2_HIDDEN % (AX_ROW_THREADS * 8) == 0 || DS4_AXK2_HIDDEN % AX_ROW_THREADS == 0, "whole rows per block");
 

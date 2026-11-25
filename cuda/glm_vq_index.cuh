@@ -4,6 +4,7 @@
 #include "glm_vq_linear.cuh"
 #include "../ds4_glm53_compact.h"
 #include <float.h>
+#include <limits>
 
 enum { GLMVQ_INDEX_HEADS = 32 };
 static constexpr float GLMVQ_INDEX_EPS = 1.0e-6f;
@@ -188,7 +189,7 @@ template <> struct glmvq_idx_elem<__nv_bfloat16> {
     }
 };
 template <> struct glmvq_idx_elem<__half> {
-    static constexpr float invisible = -INFINITY;
+    static constexpr float invisible = -std::numeric_limits<float>::infinity();
     static __device__ __forceinline__ uint32_t pack(float lo, float hi) {
         const __half2 v = __floats2half2_rn(lo, hi);
         return *(const uint32_t *)&v;

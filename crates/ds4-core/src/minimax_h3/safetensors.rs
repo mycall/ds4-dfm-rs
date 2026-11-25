@@ -18,10 +18,10 @@
 //! form, which the reference rejects. Neither changes a valid header's
 //! interpretation, and every structural rule below is checked explicitly.
 
+use crate::file_at::FileExt;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{self, File};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;

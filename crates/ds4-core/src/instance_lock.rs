@@ -6,13 +6,23 @@
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::Error;
 
 const LOCK_PATH_ENV: &str = "DS4_LOCK_FILE";
-const DEFAULT_LOCK_PATH: &str = "/tmp/ds4.lock";
+fn default_lock_path() -> PathBuf {
+    #[cfg(unix)]
+    {
+        PathBuf::from("/tmp/ds4.lock")
+    }
+    #[cfg(windows)]
+    {
+        std::env::temp_dir().join("ds4.lock")
+    }
+}
 /// The C hosts' exit status for a lock failure.
 const LOCK_ERROR_CODE: i32 = 2;
 
@@ -20,7 +30,7 @@ const LOCK_ERROR_CODE: i32 = 2;
 pub(crate) fn acquire() -> Result<File, Error> {
     let path = std::env::var_os(LOCK_PATH_ENV)
         .filter(|path| !path.is_empty())
-        .map_or_else(|| PathBuf::from(DEFAULT_LOCK_PATH), PathBuf::from);
+        .map_or_else(default_lock_path, PathBuf::from);
     acquire_at(&path)
 }
 
@@ -29,14 +39,11 @@ fn acquire_at(path: &Path) -> Result<File, Error> {
         code: LOCK_ERROR_CODE,
         message: format!("failed to {what} lock file {}: {error}", path.display()),
     };
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(path)
-        .map_err(|e| fail("open", e))?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path).map_err(|e| fail("open", e))?;
 
     match file.try_lock() {
         Ok(()) => {}
@@ -82,7 +89,16 @@ mod tests {
         let first = acquire_at(&path).unwrap();
         let again = acquire_at(&path).unwrap_err();
         assert_eq!(again.code, LOCK_ERROR_CODE);
+        // POSIX advisory locking permits the second handle to read the PID.
+        // Windows denies reads through that handle while the lock is held.
+        #[cfg(unix)]
         assert!(again.message.contains("this process"), "{}", again.message);
+        #[cfg(windows)]
+        assert!(
+            again.message.contains("already running"),
+            "{}",
+            again.message
+        );
 
         // C hosts lock with flock(2); they must see the lock as held.
         let status = std::process::Command::new("flock")

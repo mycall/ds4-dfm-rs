@@ -1,3 +1,4 @@
+#include "native/bridge/ds4_aligned.h"
 /* Inkling-2 banks. The scheduler serializes bank forwards under the engine
  * generation lock, so graph 0's scratch serves every bank; each bank owns
  * its full-layer NVFP4 blocks (with its own SSD tier past the resident
@@ -72,7 +73,7 @@ static bool inkling2_blocks_copy(ds4_inkling2_graph *dst, ds4_inkling2_graph *sr
     if (resident == blocks) { return true; }
     inkling2_io_idle(sk);
     if (!ds4_gpu_synchronize()) { return false; }
-    uint8_t *buf = aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
+    uint8_t *buf = ds4_aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
     bool ok = buf != NULL;
     for (uint32_t l = 0; ok && l < INKLING2_FULL_LAYERS; l++) {
         for (uint32_t b = resident, count = 0; ok && b < blocks; b += count) {
@@ -95,7 +96,7 @@ static bool inkling2_blocks_copy(ds4_inkling2_graph *dst, ds4_inkling2_graph *sr
             }
         }
     }
-    free(buf);
+    ds4_aligned_free(buf);
     return ok;
 }
 

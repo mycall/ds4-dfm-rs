@@ -85,6 +85,22 @@ record qualification separately from throughput.
 
 ## Quick start
 
+### Native Windows ARM64 build on N1X (n1x branch)
+
+Install the native ARM64 Rust toolchain, Visual Studio ARM64 C++ tools with LLVM,
+CMake and vcpkg, and the ARM64 CUDA toolkit. From PowerShell in the fork, run this command.
+
+```powershell
+.\native\windows\build.ps1 -Smoke
+```
+
+The release hosts are `target/n1x/ds4.exe`, `ds4-server.exe` and `ds4-bench.exe`.
+The smoke test checks shard mappings and the DeepSeek V4.1 CUDA row kernels.
+Pass `-UnslothModel <first-shard.gguf>` to also run a real UD-IQ2_XXS
+expert projection on the GPU and check it against a CPU reference.
+The Windows build targets a single local GPU. Model qualification on this branch
+requires a separate generation test for the particular artifact.
+
 ### Build
 
 The repository pins Rust 1.100.0, `rustfmt` and `clippy` in

@@ -21,8 +21,8 @@
  *
  * Build: make tests/test_ds41_vq (or the test-ds41-vq runner). */
 
-#include "ds4_gpu.h"
-#include "ds41_vq_fmt.h"
+#include "../ds4_gpu.h"
+#include "../ds41_vq_fmt.h"
 
 #include <cuda_runtime.h>
 

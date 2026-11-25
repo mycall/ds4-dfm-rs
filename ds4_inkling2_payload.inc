@@ -1,3 +1,4 @@
+#include "native/bridge/ds4_aligned.h"
 /* Snapshot ("IK21"): tokens, logits, then per layer the full layers' NVFP4
  * blocks [0, ceil(n / 128)) from wherever the SSD tier keeps them (device,
  * file or pinned window) or a sliding layer's last min(n, 1,023) ring rows
@@ -199,9 +200,9 @@ static int inkling2_payload_save(ds4_inkling2_graph *g, const int *tokens, uint3
     for (uint32_t i = 0; i < DS4_INK2_TOKENS; i++) {
         if (!isfinite(logits[i])) { payload_set_err(err, errlen, "invalid Inkling-2 snapshot logits"); return 1; }
     }
-    uint8_t *buf = aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
+    uint8_t *buf = ds4_aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
     if (!buf || !ds4_gpu_synchronize()) {
-        free(buf);
+        ds4_aligned_free(buf);
         payload_set_err(err, errlen, "Inkling-2 snapshot allocation or synchronization failed");
         return 1;
     }
@@ -219,7 +220,7 @@ static int inkling2_payload_save(ds4_inkling2_graph *g, const int *tokens, uint3
     if (!rc) { rc = payload_write_logits(fp, logits, buf, err, errlen); }
     if (!rc) { rc = inkling2_payload_state(INKLING2_PAYLOAD_SAVE, fp, g, n, buf, NULL, err, errlen); }
     if (!rc && g->draft) { rc = inkling2_payload_draft(INKLING2_PAYLOAD_SAVE, fp, g, n, rows, buf, NULL, err, errlen); }
-    free(buf);
+    ds4_aligned_free(buf);
     return rc;
 }
 
@@ -247,10 +248,10 @@ static int inkling2_payload_restore(ds4_inkling2_graph *g, FILE *fp, uint64_t *l
         return 1;
     }
     int *tokens = malloc((size_t)n * sizeof(*tokens));
-    uint8_t *buf = aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
+    uint8_t *buf = ds4_aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
     if (!tokens || !buf || !ds4_gpu_synchronize()) {
         free(tokens);
-        free(buf);
+        ds4_aligned_free(buf);
         payload_set_err(err, errlen, "Inkling-2 restore allocation or synchronization failed");
         return 1;
     }
@@ -281,7 +282,7 @@ static int inkling2_payload_restore(ds4_inkling2_graph *g, FILE *fp, uint64_t *l
         payload_set_err(err, errlen, "Inkling-2 restore finalization failed");
         rc = 1;
     }
-    free(buf);
+    ds4_aligned_free(buf);
     if (rc) { free(tokens); return 1; }
     g->position = n;
     // The drafter's rings hold rows below n only.

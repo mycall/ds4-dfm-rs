@@ -1,3 +1,4 @@
+#include "native/bridge/ds4_aligned.h"
 /* MiniMax banks. The scheduler serializes bank forwards under the engine
  * generation lock, so graph 0's scratch serves every bank; each bank owns
  * its index keys and K/V pages. Both are position-indexed and every layer
@@ -30,7 +31,7 @@ static bool minimax_rows_copy(ds4_minimax_graph *dst, ds4_minimax_graph *src, ui
     }
     if (!pos || !src->kv.spill) { return true; }
     const uint32_t blocks = (uint32_t)minimax_blocks(pos), per = DS4_SESSION_IO_CHUNK / MINIMAX_KV_BLOCK;
-    uint8_t *buf = aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
+    uint8_t *buf = ds4_aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
     bool ok = buf && ds4_gpu_synchronize() && minimax_kv_flush(&src->kv);
     minimax_kv_drop(&dst->kv);
     for (uint32_t il = 0; ok && il < MINIMAX_LAYERS; il++) {
@@ -40,7 +41,7 @@ static bool minimax_rows_copy(ds4_minimax_graph *dst, ds4_minimax_graph *src, ui
                 minimax_kv_pages(&dst->kv, true, il, b, count, buf);
         }
     }
-    free(buf);
+    ds4_aligned_free(buf);
     return ok;
 }
 

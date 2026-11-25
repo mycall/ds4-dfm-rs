@@ -158,8 +158,13 @@ static bool inkling2_kv_open(inkling2_kv *kv, uint32_t ctx, uint32_t cap) {
     }
     // Reserve the whole file now: a full disk fails here, not mid-forward.
     const uint64_t bytes = (uint64_t)INKLING2_FULL_LAYERS * (kv->blocks - kv->resident) * DS4_INK2_BLOCK_BYTES;
+#ifdef _WIN32
+    kv->fd = ds4_temp_fd(dir);
+    if (kv->fd < 0 || _chsize_s(kv->fd, bytes) != 0) {
+#else
     kv->fd = open(dir, O_TMPFILE | O_RDWR | O_DIRECT | O_CLOEXEC, 0600);
     if (kv->fd < 0 || fallocate(kv->fd, 0, 0, (off_t)bytes) != 0) {
+#endif
         fprintf(stderr, "ds4: Inkling-2 K/V file in %s (%.2f GiB) failed: %s (DS4_KV_OFFLOAD_DIR sets the "
             "directory)\n", dir, (double)bytes / 1073741824.0, strerror(errno));
         inkling2_kv_close(kv);

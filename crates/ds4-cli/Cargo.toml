@@ -140,3 +140,6 @@ ds4-server = { path = "../ds4-server" }
 serde_json = "1"
 libc = "0.2"
 nvtx = { version = "2", optional = true, default-features = false, features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"] }

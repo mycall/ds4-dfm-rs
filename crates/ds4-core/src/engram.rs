@@ -24,8 +24,8 @@
 //! computed for the captured prompts, and `hash_rows` reproduces them
 //! (evidence in the port plan, §6.6).
 
+use crate::file_at::FileExt;
 use std::fs::File;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 use crate::gguf::GgufFile;
@@ -290,10 +290,16 @@ impl EngramShard {
 
     /// Bind checkpoint identity to the file this feed actually reads, even
     /// if its pathname is replaced after open.
+    #[cfg(unix)]
     pub(crate) fn metadata(&self) -> Result<std::fs::Metadata, EngramError> {
         self.file
             .metadata()
             .map_err(|e| EngramError::Io(e.to_string()))
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn metadata(&self) -> Result<[u64; 5], EngramError> {
+        crate::file_at::identity(&self.file).map_err(|e| EngramError::Io(e.to_string()))
     }
 
     pub fn is_direct(&self) -> bool {
@@ -302,6 +308,7 @@ impl EngramShard {
 
     /// The shard's fd for the io_uring round (`v41_ering_req.fd`,
     /// core_v41.h:260); the ring owns no fd of its own.
+    #[cfg(target_os = "linux")]
     pub(crate) fn raw_fd(&self) -> std::os::raw::c_int {
         use std::os::unix::io::AsRawFd;
         self.file.as_raw_fd()

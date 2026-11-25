@@ -82,7 +82,9 @@ static void v41_vis_drop_pages(const ds4_model *vm) {
 #ifdef __linux__
     if (vm->fd >= 0) (void)posix_fadvise(vm->fd, 0, 0, POSIX_FADV_DONTNEED);
 #endif
+#ifdef MADV_DONTNEED
     (void)madvise((void *)vm->map, (size_t)vm->size, MADV_DONTNEED);
+#endif
 }
 
 /* The official Linear: bf16 GEMM, then bias add rounded to bf16 (or a plain

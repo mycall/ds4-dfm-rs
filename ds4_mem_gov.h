@@ -20,6 +20,9 @@
 
 #include <stdint.h>
 #include "ds4_mem_census.h"
+#if defined(_MSC_VER) && !defined(__clang__) && defined(__cplusplus)
+#include "native/windows/atomics.h"
+#endif
 
 /* =========================================================================
  * Consumers (plan sec 6.1, narrowed to what exists on this tree; the

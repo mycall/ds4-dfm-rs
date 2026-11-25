@@ -140,7 +140,7 @@ extern "C" int ds4_gpu_ling3vl_expand_ready(
                         (unsigned long long)offsets[w]);
             }
             if (cached < PROBES) {
-                cache[cached++] = (struct probe){map, offsets[w], ok};
+                cache[cached++] = {map, offsets[w], ok};
             }
         }
         if (!ok) { return 0; }

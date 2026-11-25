@@ -1830,7 +1830,8 @@ fn run_repl(model: &ds4_core::Model, mut args: ShadowArgs) -> Result<i32, String
     let mut session = session_ready(model, &args, chat.ctx)?;
     let _sigint = repl::InterruptGuard::install();
     let history_path = repl::history_file_path();
-    let tty = repl::stdin_is_tty();
+    let tty = cfg!(unix) && repl::stdin_is_tty();
+    #[cfg(unix)]
     if tty {
         repl::init_linenoise_history(&history_path);
     }
@@ -1849,6 +1850,7 @@ fn run_repl(model: &ds4_core::Model, mut args: ShadowArgs) -> Result<i32, String
         let cmd = repl::trim_inplace(&line);
         if !cmd.is_empty() {
             if tty {
+                #[cfg(unix)]
                 repl::remember_linenoise_line(&history_path, cmd);
             } else if history.add(cmd.to_string()) {
                 let _ = history.save();

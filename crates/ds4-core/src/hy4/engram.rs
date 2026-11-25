@@ -1,15 +1,18 @@
 //! HYV4FlashEngramLayer (Transformers c2ec8505). The release packs 41
 //! independent 98-byte rows into each 4 KiB page of a layer-local file.
+use crate::file_at::FileExt;
 use std::fs::File;
+#[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::gguf::{GgufFile, GGUF_VALUE_INT32, GGUF_VALUE_UINT64};
-use crate::uring::{Req, Ring, ERING_CAP};
+#[cfg(target_os = "linux")]
+use crate::uring::Req;
+use crate::uring::{Ring, ERING_CAP};
 use crate::TensorError;
 
 const PAGE: usize = 4096;
@@ -225,6 +228,7 @@ impl Engram {
         }
         self.reads
             .sort_unstable_by_key(|r| (r.layer, r.page, r.within));
+        #[cfg(target_os = "linux")]
         if let Some(ring) = &mut self.ring {
             // One request per distinct record, all in one round: the ring
             // keeps ERING_CAP reads in flight through bounce slots. Draining

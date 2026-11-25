@@ -9,7 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
+#ifdef _WIN32
+#include "../windows/file.h"
+#else
 #include <unistd.h>
+typedef off_t ds4_file_offset;
+#define ds4_mkstemp mkstemp
+#define ds4_install_file rename
+#endif
 
 /* Thin wrappers over the existing engine/session API.  No inference logic
  * lives here; this file exists so Rust never includes ds4.h. */
@@ -1246,7 +1253,7 @@ int ds4_bridge_session_load_payload(ds4_bridge_session *s, const char *path,
 {
     FILE *fp;
     int rc;
-    off_t sz;
+    ds4_file_offset sz;
     uint64_t payload_bytes;
 
     if (!s || !s->session) {
@@ -1293,7 +1300,7 @@ int ds4_bridge_session_load_payload_range(ds4_bridge_session *s, const char *pat
 {
     FILE *fp;
     int rc;
-    off_t sz;
+    ds4_file_offset sz;
     uint64_t file_bytes;
 
     if (!s || !s->session) {
@@ -1330,7 +1337,7 @@ int ds4_bridge_session_load_payload_range(ds4_bridge_session *s, const char *pat
         set_err(err, errlen, "truncated session payload range");
         return 1;
     }
-    if (fseeko(fp, (off_t)offset, SEEK_SET) != 0) {
+    if (fseeko(fp, (ds4_file_offset)offset, SEEK_SET) != 0) {
         fclose(fp);
         set_err(err, errlen, "failed to seek session payload range");
         return 1;
@@ -1897,7 +1904,7 @@ int ds4_bridge_batch_ctx_bank_save_payload(ds4_bridge_batch_ctx *c,
         return 1;
     }
     snprintf(tmp, path_len + sizeof(".tmp.XXXXXX"), "%s.tmp.XXXXXX", path);
-    fd = mkstemp(tmp);
+    fd = ds4_mkstemp(tmp);
     if (fd < 0) {
         free(tmp);
         set_err(err, errlen, "failed to create bank payload staging file");
@@ -1916,7 +1923,7 @@ int ds4_bridge_batch_ctx_bank_save_payload(ds4_bridge_batch_ctx *c,
         set_err(err, errlen, "failed to close bank payload");
         rc = 1;
     }
-    if (rc == 0 && rename(tmp, path) != 0) {
+    if (rc == 0 && ds4_install_file(tmp, path) != 0) {
         set_err(err, errlen, "failed to install bank payload");
         rc = 1;
     }
@@ -1934,7 +1941,7 @@ int ds4_bridge_batch_ctx_bank_load_payload_range(ds4_bridge_batch_ctx *c,
 {
     FILE *fp;
     int rc;
-    off_t sz;
+    ds4_file_offset sz;
     uint64_t file_bytes;
 
     if (!c || !c->ctx) {
@@ -1969,7 +1976,7 @@ int ds4_bridge_batch_ctx_bank_load_payload_range(ds4_bridge_batch_ctx *c,
         set_err(err, errlen, "truncated bank payload range");
         return 1;
     }
-    if (fseeko(fp, (off_t)offset, SEEK_SET) != 0) {
+    if (fseeko(fp, (ds4_file_offset)offset, SEEK_SET) != 0) {
         fclose(fp);
         set_err(err, errlen, "failed to seek bank payload range");
         return 1;

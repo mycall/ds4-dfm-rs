@@ -466,6 +466,7 @@ pub fn mux_args(
 /// threads so neither pipe can starve the other.
 ///
 /// `program` is operator-configured; a generation request cannot choose it.
+#[cfg(unix)]
 pub fn mux_mp4(
     program: &Path,
     path: &Path,
@@ -612,6 +613,19 @@ pub fn mux_mp4(
     Ok(())
 }
 
+#[cfg(windows)]
+pub fn mux_mp4(
+    _program: &Path,
+    _path: &Path,
+    _frames: &RgbFrames,
+    _pcm: &[f32],
+    _samples: i32,
+    _channels: i32,
+    _sample_rate: i32,
+) -> Result<(), String> {
+    Err("MiniMax-H3 audio/video pipe muxing requires Unix".into())
+}
+
 /// The descriptor the child is given for the audio pipe, above stdio
 /// (`h3_ffmpeg.c:659-665`).
 const MUX_AUDIO_FD: i32 = 3;
@@ -620,6 +634,7 @@ const MUX_AUDIO_FD: i32 = 3;
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn mux_pipe_lifetimes() {
         const CHILD: &str = "DS4_H3_MUX_CHILD";

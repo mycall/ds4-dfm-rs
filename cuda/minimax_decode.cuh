@@ -10,7 +10,7 @@
 
 enum { MM_USED = DS4_MINIMAX_USED, MM_HIDDEN = DS4_MINIMAX_HIDDEN, MM_FFN = DS4_MINIMAX_FFN, MM_WORDS = 8192,
        MM_WARPS = 32 };
-static const float MM_LIMIT = 7.0f;
+static constexpr float MM_LIMIT = 7.0f;
 
 // One 3072-wide down row: a whole 2048-input block, then a 1024-input tail
 // of four k-steps. R13+8 rows carry 64 residual words for the block and 32

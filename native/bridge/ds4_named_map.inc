@@ -31,11 +31,7 @@ static void model_open_named(ds4_model *m, int mmap_flags) {
         }
         if (!found) { ds4_die("tensor outside named shard"); }
     }
-    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-    void *region = mmap(NULL, (size_t)total, PROT_NONE, flags, -1, 0);
+    void *region = ds4_reserve_shards((size_t)total);
     if (region == MAP_FAILED) { ds4_die_errno("cannot reserve named shards", ""); }
     m->map = region;
     m->size = total;
@@ -54,7 +50,7 @@ static void model_open_named(ds4_model *m, int mmap_flags) {
         if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size < 0 ||
             (uint64_t)st.st_size != s->size) { ds4_die("named shard size changed"); }
         void *want = (uint8_t *)region + s->base;
-        if (mmap(want, (size_t)s->size, PROT_READ, mmap_flags | MAP_FIXED, fd, 0) == MAP_FAILED) {
+        if (ds4_map_shard(want, s->size, align_up(s->size, page), total - s->base, mmap_flags, fd) == MAP_FAILED) {
             ds4_die_errno("cannot mmap named shard", s->path);
         }
     }

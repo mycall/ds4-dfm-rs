@@ -585,7 +585,7 @@ extern "C" int ds4_gpu_beam_router(ds4_gvq_ctx *ctx, ds4_gpu_tensor *selected, d
 }
 
 enum { BEAM_ROW_THREADS = 256, BEAM_ROW_VALUES = BEAM_GPU_HIDDEN / BEAM_ROW_THREADS };
-static const float BEAM_RMS_EPS = 1e-6f;
+static constexpr float BEAM_RMS_EPS = 1e-6f;
 
 // Sum of `value` over the block (256 threads); every thread gets it.
 __device__ __forceinline__ float beam_block_sum(float value, float *scratch) {

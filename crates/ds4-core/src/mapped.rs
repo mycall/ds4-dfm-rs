@@ -6,6 +6,7 @@
 use std::fs::File;
 use std::io;
 use std::path::Path;
+#[cfg(unix)]
 use std::ptr;
 
 #[cfg(unix)]
@@ -39,11 +40,17 @@ mod sys {
 }
 
 pub struct MappedFile {
+    #[cfg(unix)]
     ptr: *mut u8,
+    #[cfg(unix)]
     len: usize,
+    #[cfg(windows)]
+    mapping: memmap2::Mmap,
 }
 
+#[cfg(unix)]
 unsafe impl Send for MappedFile {}
+#[cfg(unix)]
 unsafe impl Sync for MappedFile {}
 
 impl MappedFile {
@@ -83,7 +90,13 @@ impl MappedFile {
                 len,
             })
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            // SAFETY: model weights are immutable while the engine holds a view.
+            let mapping = unsafe { memmap2::MmapOptions::new().len(len).map(&file)? };
+            Ok(Self { mapping })
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = file;
             Err(io::Error::new(
@@ -94,7 +107,14 @@ impl MappedFile {
     }
 
     pub fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+        #[cfg(unix)]
+        unsafe {
+            std::slice::from_raw_parts(self.ptr, self.len)
+        }
+        #[cfg(windows)]
+        {
+            &self.mapping
+        }
     }
 }
 

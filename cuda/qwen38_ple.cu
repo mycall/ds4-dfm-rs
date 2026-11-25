@@ -10,6 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _WIN32
+#include <unistd.h>
+#include "../native/windows/atomics.h"
+#endif
 
 typedef struct {
     const uint8_t *first;

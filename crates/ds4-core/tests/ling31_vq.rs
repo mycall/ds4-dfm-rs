@@ -150,6 +150,9 @@ fn check_config_probes_requested_parts() {
     for entry in std::fs::read_dir(&root).unwrap() {
         let name = entry.unwrap().file_name();
         if name != "mtp-native.gguf" && name != "layer-72-experts.gguf" {
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(root.join(&name), copy.join(&name)).unwrap();
+            #[cfg(unix)]
             std::os::unix::fs::symlink(root.join(&name), copy.join(&name)).unwrap();
         }
     }

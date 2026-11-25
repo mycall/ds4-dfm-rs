@@ -24,8 +24,8 @@
  * [layer][block] -> slot, also pinned, steers the store and attention
  * kernels; the resident tier passes none. Both tiers run the same kernels
  * on the same bytes, so logits do not depend on the tier. */
+#if !defined(DS4_NO_GPU) && defined(__linux__)
 #include <sys/uio.h>
-#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
 #include <linux/aio_abi.h>
 #include <sys/syscall.h>
 #endif
@@ -132,7 +132,7 @@ typedef struct {
     double io_s;
 } minimax_kv;
 
-#if !defined(DS4_NO_GPU) && !defined(__APPLE__)
+#if !defined(DS4_NO_GPU) && defined(__linux__)
 /* ---------------------------------------------------------------- I/O pool */
 
 typedef struct {

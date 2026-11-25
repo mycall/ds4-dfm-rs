@@ -1,3 +1,4 @@
+#include "native/bridge/ds4_aligned.h"
 /* Snapshot ("MMX1"): tokens, logits, then per layer the index keys of
  * positions [0, n) and the K/V pages of blocks [0, ceil(n / 128)). The last
  * page's slots past n hold whatever the graph had; nothing reads them before
@@ -113,9 +114,9 @@ static int minimax_payload_save(ds4_minimax_graph *g, const int *tokens, uint32_
     for (uint32_t i = 0; i < DS4_N_VOCAB; i++) {
         if (!isfinite(logits[i])) { payload_set_err(err, errlen, "invalid MiniMax snapshot logits"); return 1; }
     }
-    uint8_t *buf = aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
+    uint8_t *buf = ds4_aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
     if (!buf || !ds4_gpu_synchronize()) {
-        free(buf);
+        ds4_aligned_free(buf);
         payload_set_err(err, errlen, "MiniMax snapshot allocation or synchronization failed");
         return 1;
     }
@@ -133,7 +134,7 @@ static int minimax_payload_save(ds4_minimax_graph *g, const int *tokens, uint32_
     if (!rc) { rc = minimax_payload_state(MINIMAX_PAYLOAD_SAVE, fp, g, n, buf, NULL, err, errlen); }
     if (!rc) { rc = minimax_draft_payload(MINIMAX_PAYLOAD_SAVE, fp, g->draft, n, draft_rows,
         buf, NULL, err, errlen); }
-    free(buf);
+    ds4_aligned_free(buf);
     return rc;
 }
 
@@ -160,10 +161,10 @@ static int minimax_payload_restore(ds4_minimax_graph *g, FILE *fp, uint64_t *lef
         return 1;
     }
     int *tokens = malloc((size_t)n * sizeof(*tokens));
-    uint8_t *buf = aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
+    uint8_t *buf = ds4_aligned_alloc(4096, DS4_SESSION_IO_CHUNK);
     if (!tokens || !buf || !ds4_gpu_synchronize()) {
         free(tokens);
-        free(buf);
+        ds4_aligned_free(buf);
         payload_set_err(err, errlen, "MiniMax restore allocation or synchronization failed");
         return 1;
     }
@@ -186,7 +187,7 @@ static int minimax_payload_restore(ds4_minimax_graph *g, FILE *fp, uint64_t *lef
         payload_set_err(err, errlen, "MiniMax restore finalization failed");
         rc = 1;
     }
-    free(buf);
+    ds4_aligned_free(buf);
     if (rc) { free(tokens); return 1; }
     // MMX1 has no draft context. MMX2 restores only committed rows; later
     // forwards and trial blocks overwrite everything outside this interval.

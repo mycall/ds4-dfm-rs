@@ -41,6 +41,7 @@
 
 #include "ds4.h"
 #include "ds4_distributed.h"
+#include "native/bridge/ds4_shard_map.h"
 #include "native/bridge/ds4_host_load.h"
 #include "ds4_ple.h"
 #include "cuda/qwen38_ple.h"
@@ -3490,7 +3491,10 @@ static void model_close(ds4_model *m) {
     model_free_owned_tensor_names(m);
     free(m->tensors);
     free(m->tensor_traits);
-    if (m->map) munmap((void *)m->map, (size_t)m->size);
+    if (m->map) {
+        if (m->split_count) ds4_unmap_shards((void *)m->map, (size_t)m->size);
+        else munmap((void *)m->map, (size_t)m->size);
+    }
     if (m->split_fds) {
         for (uint32_t i = 0; i + 1 < m->split_count; i++) {
             if (m->split_fds[i] >= 0) close(m->split_fds[i]);
@@ -3964,20 +3968,15 @@ static void model_open_split(ds4_model *m, const char *path, uint32_t count,
     }
     if (total > SIZE_MAX) ds4_die("split GGUF virtual range is too large");
 
-    int reserve_flags = MAP_PRIVATE | MAP_ANONYMOUS;
-#ifdef MAP_NORESERVE
-    reserve_flags |= MAP_NORESERVE;
-#endif
-    void *region = mmap(NULL, (size_t)total, PROT_NONE,
-                        reserve_flags, -1, 0);
+    void *region = ds4_reserve_shards((size_t)total);
     if (region == MAP_FAILED) {
         ds4_die_errno("cannot reserve split GGUF address range", path);
     }
 
     for (uint32_t k = 0; k < count; k++) {
         void *want = (uint8_t *)region + bases[k];
-        void *got = mmap(want, (size_t)sizes[k], PROT_READ,
-                         mmap_flags | MAP_FIXED, fds[k], 0);
+        void *got = ds4_map_shard(want, sizes[k], align_up(sizes[k], page), total - bases[k],
+                                  mmap_flags, fds[k]);
         if (got == MAP_FAILED) ds4_die_errno("cannot mmap model shard", path);
     }
 
@@ -46090,7 +46089,11 @@ static void ds4_acquire_instance_lock(void) {
         fprintf(stderr, "ds4: failed to open lock file %s: %s\n", path, strerror(errno));
         exit(2);
     }
+#ifdef _WIN32
+    SetHandleInformation((HANDLE)_get_osfhandle(fd), HANDLE_FLAG_INHERIT, 0);
+#else
     (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+#endif
 
     if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
         if (errno == EWOULDBLOCK) {
@@ -46120,7 +46123,9 @@ static void ds4_acquire_instance_lock(void) {
         close(fd);
         exit(2);
     }
-    dprintf(fd, "%ld\n", (long)getpid());
+    char pid_text[32];
+    const int pid_len = snprintf(pid_text, sizeof(pid_text), "%ld\n", (long)getpid());
+    (void)write(fd, pid_text, (unsigned)pid_len);
     g_ds4_lock_fd = fd;
     atexit(ds4_release_instance_lock);
 }
@@ -57927,6 +57932,17 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
     }
 #endif
     if (snap->file) { snapshot_release(snap); }
+#ifdef _WIN32
+    snap->file = ds4_temp_stream();
+    if (!snap->file || ds4_session_save_payload(s, snap->file, err, errlen) ||
+        fflush(snap->file) || ftello(snap->file) != (ds4_file_offset)bytes) {
+        snapshot_release(snap);
+        payload_set_err(err, errlen, "failed to write temporary session snapshot");
+        return 1;
+    }
+    snap->len = bytes;
+    return 0;
+#else
     /* fmemopen appends a NUL on flush. Keep it outside the binary payload,
      * otherwise a full buffer loses the last byte of convolution/MTP state. */
     const uint64_t capacity = bytes + 1u;
@@ -57953,6 +57969,7 @@ int ds4_session_save_snapshot(ds4_session *s, ds4_session_snapshot *snap, char *
     if (rc != 0) return 1;
     snap->len = bytes;
     return 0;
+#endif
 }
 
 int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, char *err, size_t errlen) {
@@ -57979,7 +57996,16 @@ int ds4_session_load_snapshot(ds4_session *s, const ds4_session_snapshot *snap, 
             return 1;
         }
     } else {
+#ifdef _WIN32
+        fp = ds4_temp_stream();
+        if (fp && (fwrite(snap->ptr, 1, (size_t)snap->len, fp) != snap->len ||
+                   fseeko(fp, 0, SEEK_SET))) {
+            fclose(fp);
+            fp = NULL;
+        }
+#else
         fp = fmemopen((void *)snap->ptr, (size_t)snap->len, "rb");
+#endif
     }
     if (!fp) {
         payload_set_err(err, errlen, "failed to open memory stream for session snapshot restore");
@@ -73142,7 +73168,12 @@ static void dots3_ref_rope(float *x, uint32_t pos, uint32_t rot,
     for (uint32_t f = 0; f < rot / 2u; f++) {
         const float inv = 1.0f / powf(base, (2.0f * (float)f) / (float)rot);
         double s, c;
+#ifdef _WIN32
+        s = sin((double)((float)pos * inv));
+        c = cos((double)((float)pos * inv));
+#else
         sincos((double)((float)pos * inv), &s, &c);
+#endif
         const float even = x[offset + 2u * f];
         const float odd = x[offset + 2u * f + 1u];
         x[offset + 2u * f] = even * (float)c - odd * (float)s;

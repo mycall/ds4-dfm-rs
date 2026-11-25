@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(unix)]
 extern "C" fn sigint_handler(_: libc::c_int) {
     INTERRUPTED.store(true, Ordering::SeqCst);
 }
@@ -16,10 +17,12 @@ pub fn interrupt_clear() {
     INTERRUPTED.store(false, Ordering::SeqCst);
 }
 
+#[cfg(unix)]
 pub struct InterruptGuard {
     old: Option<libc::sigaction>,
 }
 
+#[cfg(unix)]
 impl InterruptGuard {
     pub fn install() -> Self {
         interrupt_clear();
@@ -44,6 +47,7 @@ impl InterruptGuard {
     }
 }
 
+#[cfg(unix)]
 impl Drop for InterruptGuard {
     fn drop(&mut self) {
         if let Some(old) = self.old.take() {
@@ -53,6 +57,48 @@ impl Drop for InterruptGuard {
             unsafe {
                 libc::sigaction(libc::SIGINT, &old, std::ptr::null_mut());
             }
+        }
+    }
+}
+
+#[cfg(windows)]
+pub struct InterruptGuard(bool);
+
+#[cfg(windows)]
+unsafe extern "system" fn console_interrupt(event: u32) -> i32 {
+    if event != windows_sys::Win32::System::Console::CTRL_C_EVENT {
+        return 0;
+    }
+    INTERRUPTED.store(true, Ordering::SeqCst);
+    1
+}
+
+#[cfg(windows)]
+impl InterruptGuard {
+    pub fn install() -> Self {
+        interrupt_clear();
+        // SAFETY: the callback is static and only updates an atomic flag.
+        Self(
+            unsafe {
+                windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
+                    Some(console_interrupt),
+                    1,
+                )
+            } != 0,
+        )
+    }
+}
+
+#[cfg(windows)]
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe {
+                windows_sys::Win32::System::Console::SetConsoleCtrlHandler(
+                    Some(console_interrupt),
+                    0,
+                )
+            };
         }
     }
 }
@@ -71,6 +117,7 @@ pub fn interrupt_end(interrupted: bool, generated: i32) -> InterruptEnd {
     }
 }
 
+#[cfg(unix)]
 unsafe extern "C" {
     fn linenoise(prompt: *const libc::c_char) -> *mut libc::c_char;
     fn linenoiseFree(ptr: *mut libc::c_void);
@@ -89,11 +136,11 @@ pub enum ReplRead {
 }
 
 pub fn stdin_is_tty() -> bool {
-    // SAFETY: [Category 8 — FFI] `STDIN_FILENO` is the process stdin; `isatty`
-    // only inspects the descriptor and does not retain it.
-    unsafe { libc::isatty(libc::STDIN_FILENO) == 1 }
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
+#[cfg(unix)]
 pub fn init_linenoise_history(path: &std::path::Path) {
     let Some(c_path) = path.to_str().and_then(|p| std::ffi::CString::new(p).ok()) else {
         return;
@@ -108,6 +155,7 @@ pub fn init_linenoise_history(path: &std::path::Path) {
     }
 }
 
+#[cfg(unix)]
 pub fn remember_linenoise_line(path: &std::path::Path, line: &str) {
     let Ok(c_line) = std::ffi::CString::new(line) else {
         return;
@@ -125,12 +173,14 @@ pub fn remember_linenoise_line(path: &std::path::Path, line: &str) {
 }
 
 pub fn read_repl_line(prompt: &str) -> Result<ReplRead, String> {
+    #[cfg(unix)]
     if stdin_is_tty() {
         return read_linenoise_line(prompt);
     }
-    read_plain_line()
+    read_plain_line(prompt)
 }
 
+#[cfg(unix)]
 fn read_linenoise_line(prompt: &str) -> Result<ReplRead, String> {
     let c_prompt = std::ffi::CString::new(prompt).map_err(|_| "prompt contains NUL".to_string())?;
     // SAFETY: [Category 8 — FFI] prompt is a live CString; linenoise does not
@@ -155,10 +205,10 @@ fn read_linenoise_line(prompt: &str) -> Result<ReplRead, String> {
     Ok(ReplRead::Line(line))
 }
 
-fn read_plain_line() -> Result<ReplRead, String> {
+fn read_plain_line(prompt: &str) -> Result<ReplRead, String> {
     use std::io::{self, BufRead, Write};
     let mut stdout = io::stdout();
-    write!(stdout, "ds4> ").map_err(|e| e.to_string())?;
+    write!(stdout, "{prompt}").map_err(|e| e.to_string())?;
     stdout.flush().map_err(|e| e.to_string())?;
     let mut line = String::new();
     match io::stdin().lock().read_line(&mut line) {
@@ -222,14 +272,14 @@ impl History {
 
     pub fn save(&self) -> std::io::Result<()> {
         use std::io::Write;
+        #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
 
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&self.path)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let mut file = opts.open(&self.path)?;
         for line in &self.lines {
             for &byte in line.as_bytes() {
                 file.write_all(&[if byte == b'\n' { b'\r' } else { byte }])?;

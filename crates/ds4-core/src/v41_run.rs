@@ -31,6 +31,7 @@ use ds4_sys::{
 
 use crate::engram::{EngramHash, EngramShard};
 use crate::sidecar::{FNV_PRIME, FNV_SEED};
+#[cfg(target_os = "linux")]
 use crate::uring::Req;
 use crate::{
     identify_file, Error, GgufFile, Model, Result, TensorInventory, V41Wire, V41Zchain, ZchainGeom,
@@ -1061,6 +1062,7 @@ impl FeedCore {
     /// fill one request per plane per row (weights then scales), one submit
     /// for the whole round.  The row-range refusal is the engine's err=1
     /// (`core_v41_engram.c:247`).
+    #[cfg(target_os = "linux")]
     fn fill_round(
         &mut self,
         ei: u32,
@@ -1111,6 +1113,17 @@ impl FeedCore {
             return Err("engram io_uring submit failed".into());
         }
         Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn fill_round(
+        &mut self,
+        ei: u32,
+        start: usize,
+        end: usize,
+        base: *mut u8,
+    ) -> std::result::Result<(), String> {
+        self.serial_round(ei, start, end, base)
     }
 
     /// `v41_ering_wait` (`core_v41_ering.c:122-144`): drain the round's
@@ -1553,9 +1566,21 @@ enum EngramMode {
     Off,
 }
 
+#[cfg(windows)]
+fn mem_available_mb() -> Option<i64> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    // SAFETY: Win32 fills this structure synchronously after checking dwLength.
+    unsafe {
+        let mut info: MEMORYSTATUSEX = std::mem::zeroed();
+        info.dwLength = std::mem::size_of_val(&info) as u32;
+        (GlobalMemoryStatusEx(&mut info) != 0).then_some((info.ullAvailPhys >> 20) as i64)
+    }
+}
+
 /// Linux MemAvailable in MB (the engine's mem_available_mb,
 /// server_sched_v41.c:22-29); None when /proc/meminfo cannot be read, which
 /// leaves the admission open.  A negative value is not possible here.
+#[cfg(not(windows))]
 fn mem_available_mb() -> Option<i64> {
     let text = std::fs::read_to_string("/proc/meminfo").ok()?;
     for line in text.lines() {
@@ -1570,7 +1595,10 @@ fn mem_available_mb() -> Option<i64> {
 #[derive(Clone)]
 struct EngramSource {
     path: std::path::PathBuf,
+    #[cfg(unix)]
     metadata: std::fs::Metadata,
+    #[cfg(windows)]
+    metadata: [u64; 5],
 }
 
 fn kv_state_digest(digest: u64, mode: EngramMode, sources: &[EngramSource]) -> Result<u64> {
@@ -1610,12 +1638,20 @@ fn kv_state_digest(digest: u64, mode: EngramMode, sources: &[EngramSource]) -> R
         }
         Ok(digest)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = sources;
-        Err(asset_error(
-            "V4.1 Engram checkpoint identity requires Unix file metadata",
-        ))
+        use std::os::windows::ffi::OsStrExt;
+        for source in sources {
+            let path: Vec<u16> = source.path.as_os_str().encode_wide().collect();
+            kv_fold_bytes(&mut digest, &(path.len() as u64).to_le_bytes());
+            for unit in path {
+                kv_fold_bytes(&mut digest, &unit.to_le_bytes());
+            }
+            for field in source.metadata {
+                kv_fold_bytes(&mut digest, &field.to_le_bytes());
+            }
+        }
+        Ok(digest)
     }
 }
 

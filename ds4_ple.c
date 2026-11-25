@@ -1549,7 +1549,11 @@ static void store_destroy(ds4_ple_store *store) {
     free(store->workers);
     free(store->queue);
     free(store->slots);
+#ifdef _WIN32
+    _aligned_free(store->cache_memory);
+#else
     free(store->cache_memory);
+#endif
     free(store);
 }
 
@@ -1668,9 +1672,14 @@ static ds4_ple_store *store_start(ds4_ple_store *store, size_t slots,
     store->layout.worker_count = worker_count;
     store->set_count =
         (uint32_t)slots / DS4_PLE_CACHE_WAYS;
+#ifdef _WIN32
+    store->cache_memory = _aligned_malloc(store->layout.cache_bytes, DS4_PLE_PAGE_BYTES);
+    if (!store->cache_memory ||
+#else
     if (posix_memalign(&store->cache_memory,
                        DS4_PLE_PAGE_BYTES,
                        store->layout.cache_bytes) != 0 ||
+#endif
         !(store->slots =
               calloc(slots, sizeof(*store->slots))) ||
         !(store->queue =

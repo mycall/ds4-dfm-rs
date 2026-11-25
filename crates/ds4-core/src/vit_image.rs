@@ -809,6 +809,7 @@ mod tests {
     /// `DS4_VIT_BENCH=qwen:FILE:N`: median ms per decode+resize+pack, the
     /// process peak RSS and its rise over the start, as `vit_image_ref
     /// bench` prints them for C.
+    #[cfg(target_os = "linux")]
     #[test]
     #[ignore]
     fn bench() {

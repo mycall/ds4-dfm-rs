@@ -19,8 +19,10 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/un.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 #include <unordered_map>
@@ -29,6 +31,12 @@
 #include <new>
 #include <mutex>
 #include <algorithm>
+#ifdef _WIN32
+#undef IN
+#undef OUT
+#undef far
+#undef near
+#endif
 
 #include "cuda/mmq/ds4_mmq.h"
 #include "cuda/mmq/ds4_repack.h"
@@ -44,7 +52,11 @@
 #endif
 
 #define CUDA_QK_K 256
+#ifdef _MSC_VER
+#define DS4_CUDA_UNUSED
+#else
 #define DS4_CUDA_UNUSED __attribute__((unused))
+#endif
 
 enum {
     /* attention_decode_mixed_kernel stores raw-window scores plus visible
@@ -5997,7 +6009,9 @@ extern "C" int ds4_gpu_set_model_shard_fds(const void *model_map, const int *fds
         }
 #endif
         g_model_shard_direct.push_back(direct);
+#ifndef _WIN32
         if ((uint64_t)st.st_blksize > g_model_shard_align) g_model_shard_align = (uint64_t)st.st_blksize;
+#endif
         g_model_shard_bases.push_back(base);
         g_model_shard_sizes.push_back((uint64_t)st.st_size);
         base += ((uint64_t)st.st_size + page - 1u) / page * page;
@@ -6019,7 +6033,9 @@ extern "C" int ds4_gpu_set_model_fd(int fd) {
         struct stat st;
         if (fstat(fd, &st) == 0 && st.st_size > 0) {
             g_model_file_size = (uint64_t)st.st_size;
+#ifndef _WIN32
             if (st.st_blksize > 1) g_model_direct_align = (uint64_t)st.st_blksize;
+#endif
         }
 #if defined(__linux__) && defined(O_DIRECT)
         if (getenv("DS4_CUDA_NO_DIRECT_IO") == NULL) {
@@ -6078,6 +6094,10 @@ static int driver_ok(CUresult result, const char *what) {
 }
 
 static int recv_vmm_fd(const char *socket_path, unsigned long long alloc_id, unsigned long long *alloc_bytes_out) {
+#ifdef _WIN32
+    fprintf(stderr, "ds4: the VMM weight broker requires Unix descriptor passing\n");
+    return -1;
+#else
     if (!socket_path || !socket_path[0]) return -1;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -6146,6 +6166,7 @@ static int recv_vmm_fd(const char *socket_path, unsigned long long alloc_id, uns
     }
     if (alloc_bytes_out) *alloc_bytes_out = got_bytes;
     return recv_fd;
+#endif
 }
 
 static int import_vmm_allocation(
@@ -24599,8 +24620,8 @@ extern "C" void ds4_gpu_invalidate_captured_graphs(const char *why) {
  *
  * Opt out (restore legacy warp8 forcing; drifts from base, for bisection):
  *   DS4_CUDA_MTP_VERIFIER_FORCE_WARP8=1   (or back-compat DS4_CUDA_MTP_VERIFIER_USE_MMQ=0) */
-static __thread int g_in_mtp_verifier = 0;
-static __thread int g_in_mtp_verifier_scope = 0;
+static thread_local int g_in_mtp_verifier = 0;
+static thread_local int g_in_mtp_verifier_scope = 0;
 static int g_mtp_verifier_bypass_init = 0;
 static int g_mtp_verifier_bypass = 1;  /* default: mmq stays active in verifier (exact vs base) */
 
