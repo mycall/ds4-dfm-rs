@@ -2,6 +2,8 @@
 
 pub mod bench;
 mod conversation;
+#[cfg(all(feature = "n1x-gguf", target_os = "windows", target_arch = "aarch64"))]
+mod n1x_gguf;
 pub mod repl;
 pub mod session_exec;
 pub mod session_snapshot;
@@ -1643,6 +1645,12 @@ pub fn run(name: &str, mut args: ShadowArgs) -> Result<i32, String> {
     } else {
         None
     };
+    #[cfg(all(feature = "n1x-gguf", target_os = "windows", target_arch = "aarch64"))]
+    if let Some(prompt) = generation_text.as_deref() {
+        if n1x_gguf::matches(std::path::Path::new(model_path)) {
+            return n1x_gguf::generate(&args, model_path, prompt);
+        }
+    }
     let want_repl = !worker
         && args.prompt.is_none()
         && args.prompt_file.is_none()

@@ -3,6 +3,7 @@
 [CmdletBinding()]
 param(
     [switch]$Smoke,
+    [switch]$GgufCpuOnly,
     [string]$UnslothModel,
     # Explicitly reuse a previously compiled set of native objects.
     [switch]$Relink
@@ -69,6 +70,7 @@ try {
         if (!(Test-Path -LiteralPath $obj)) { throw "Missing $obj" }
         $obj
     }
+    & "$PSScriptRoot/build-gguf.ps1" -Out $out -CpuOnly:$GgufCpuOnly
     $libdirs = @("/LIBPATH:$cudaLib", "/LIBPATH:$dep/lib")
     $libs = @('cuda.lib', 'cublas.lib', 'cudart.lib', 'pthreadVC3.lib', 'mman.lib', 'OneCore.lib')
     $env:CMAKE_TOOLCHAIN_FILE_aarch64_pc_windows_msvc = Join-Path $PSScriptRoot 'runtime.cmake'
@@ -84,8 +86,10 @@ try {
     } finally { $sha.Dispose() }
     foreach ($entry in @(@('ds4-server', 'ds4-server-rs'), @('ds4-cli', 'ds4-rs'), @('ds4-cli', 'ds4-bench-rs'))) {
         $pkg, $bin = $entry
-        Invoke-Checked cargo (@('rustc', '--release', '--locked', '--target', $target, '--features', 'native',
-                                '-p', $pkg, '--bin', $bin, '--', '-C', "metadata=$hash") + $link)
+        $features = if ($bin -eq 'ds4-rs') { 'n1x-gguf' } else { 'native' }
+        $extra = if ($bin -eq 'ds4-rs') { @('-C', "link-arg=$out/ds41_gguf.lib") } else { @() }
+        Invoke-Checked cargo (@('rustc', '--release', '--locked', '--target', $target, '--features', $features,
+                                '-p', $pkg, '--bin', $bin, '--', '-C', "metadata=$hash") + $link + $extra)
         Copy-Item "target/$target/release/$bin.exe" (Join-Path $out ($bin.Replace('-rs', '') + '.exe'))
     }
     Copy-Item "$dep/bin/mman.dll","$dep/bin/pthreadVC3.dll" $out
@@ -115,6 +119,8 @@ try {
             Invoke-Checked link.exe (@('/NOLOGO', '/OPT:REF', "/OUT:$probe.exe", "$probe.obj") +
                                      $support + $libdirs + $libs)
             Invoke-Checked "$probe.exe" @($UnslothModel)
+            $backend = if ($GgufCpuOnly) { 'cpu' } else { 'cuda' }
+            Invoke-Checked python @("$PSScriptRoot/smoke-gguf.py", "$out/ds4.exe", $UnslothModel, '--backend', $backend)
         }
     }
 } finally {

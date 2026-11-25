@@ -18,6 +18,19 @@ extern "C" {
  * prefill / decode / KV / destroy.  Existing extras stay; do not mass-delete.
  * Policy: docs/rust-migration/FFI_CONTRACT.md */
 
+#if defined(_WIN32) && defined(_M_ARM64)
+#ifdef DS4_GGUF_BUILD
+#define DS4_GGUF_API __declspec(dllexport)
+#else
+#define DS4_GGUF_API __declspec(dllimport)
+#endif
+typedef struct ds4_bridge_gguf ds4_bridge_gguf;
+DS4_GGUF_API ds4_bridge_gguf *ds4_bridge_gguf_open(const char *path, int gpu, int ctx, int threads, int vocab);
+DS4_GGUF_API const float *ds4_bridge_gguf_eval(ds4_bridge_gguf *s, const int *ids, int count);
+DS4_GGUF_API void ds4_bridge_gguf_close(ds4_bridge_gguf *s);
+#undef DS4_GGUF_API
+#endif
+
 typedef struct ds4_bridge_model ds4_bridge_model;
 typedef struct ds4_bridge_session ds4_bridge_session;
 typedef struct ds4_bridge_snapshot ds4_bridge_snapshot;

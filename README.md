@@ -96,10 +96,25 @@ CMake and vcpkg, and the ARM64 CUDA toolkit. From PowerShell in the fork, run th
 
 The release hosts are `target/n1x/ds4.exe`, `ds4-server.exe` and `ds4-bench.exe`.
 The smoke test checks shard mappings and the DeepSeek V4.1 CUDA row kernels.
-Pass `-UnslothModel <first-shard.gguf>` to also run a real UD-IQ2_XXS
-expert projection on the GPU and check it against a CPU reference.
-The Windows build targets a single local GPU. Model qualification on this branch
-requires a separate generation test for the particular artifact.
+For a DeepSeek-V4.1-Flash-1017 Unsloth GGUF, keep all six shards together and
+pass the first shard to the CLI. The build fetches a pinned llama.cpp graph backend
+and places its native DLLs alongside the executable. The Rust CLI renders the
+artifact's chat template, tokenizes the prompt and samples the logits. CUDA runs
+the graph with a routed-expert cache budget of half the free device memory after
+loading the dense weights. The experts stay backed by the shards and the Engram
+table reads rows on demand. Windows can reclaim cold expert pages from the
+bounded process working set.
+
+```powershell
+$modelDir = Join-Path $HOME 'models/deepseek-ai/DeepSeek-V4.1-Flash-1017/unsloth/UD-IQ2_XXS'
+$model = (Get-ChildItem -LiteralPath $modelDir -Filter '*-00001-of-*.gguf').FullName
+.\target\n1x\ds4.exe -m $model --cuda --ctx 512 --nothink --temp 0 -p 'What is two plus two? Reply with just the digit.' -n 8
+```
+
+The GGUF adapter supports single-prompt text generation in `ds4.exe`. Existing
+server and bench hosts use their original model loaders. Passing
+`-UnslothModel <first-shard.gguf>` to the build also checks a real expert on CUDA
+and runs the arithmetic smoke test with a 3 GiB Windows memory reserve.
 
 ### Build
 

@@ -27,6 +27,7 @@ required-features = ["native"]
 [features]
 default = []
 native = []
+n1x-gguf = ["native"]
 perf-nvtx = ["dep:nvtx"]
 
 [[example]]

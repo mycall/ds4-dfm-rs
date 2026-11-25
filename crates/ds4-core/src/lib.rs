@@ -139,6 +139,8 @@ pub use payload::{
 };
 pub use progress::PrefillCheckpoint;
 pub use sample::Sampler;
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+pub mod n1x_gguf;
 pub use serving::{
     caps_from_ident, caps_from_shape, host_reuse, native_ctx_default, open_draft_tokens,
     parse_disk_space, resolve_plan, serving_caps, ChunkFence, Distribution, EffectiveView,

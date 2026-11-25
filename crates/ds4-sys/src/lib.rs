@@ -6,6 +6,26 @@
 
 #![allow(non_camel_case_types)]
 
+#[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+pub mod n1x_gguf {
+    use std::ffi::{c_char, c_void};
+    unsafe extern "C" {
+        pub fn ds4_bridge_gguf_open(
+            path: *const c_char,
+            gpu: i32,
+            ctx: i32,
+            threads: i32,
+            vocab: i32,
+        ) -> *mut c_void;
+        pub fn ds4_bridge_gguf_eval(
+            session: *mut c_void,
+            tokens: *const i32,
+            count: i32,
+        ) -> *const f32;
+        pub fn ds4_bridge_gguf_close(session: *mut c_void);
+    }
+}
+
 pub mod h3_device;
 pub mod h3_dit;
 pub mod h3_text;
