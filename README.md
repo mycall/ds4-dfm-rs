@@ -111,8 +111,32 @@ $model = (Get-ChildItem -LiteralPath $modelDir -Filter '*-00001-of-*.gguf').Full
 .\target\n1x\ds4.exe -m $model --cuda --ctx 512 --nothink --temp 0 -p 'What is two plus two? Reply with just the digit.' -n 8
 ```
 
-The GGUF adapter supports single-prompt text generation in `ds4.exe`. Existing
-server and bench hosts use their original model loaders. Passing
+For resident OpenCode sessions, use the N1X GGUF HTTP host from PowerShell:
+
+```powershell
+.\ds4-n1x.ps1 start
+.\ds4-n1x.ps1 status
+opencode run -m ds4-drm-rs/DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS "Say hello."
+# After the session
+.\ds4-n1x.ps1 stop
+```
+
+`start` waits for readiness at `http://127.0.0.1:8081/health`. Its default is
+one 32,768-token slot. Override with `-Context`, `-Model` or `-Backend cpu`.
+For OpenCode, set the provider base URL to `http://127.0.0.1:8081/v1`, enable
+text and tools, and match the configured context to the server. The wire model ID
+is `DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS`. Streaming chat completions
+return OpenAI tool calls; the client executes them and sends back tool results.
+The resident graph retains its expert cache and reuses matching prompt tokens
+across turns. A cold prompt still reads expert weights from disk. The CUDA
+server asks Windows for the missing expert ranges of each layer together
+before uploading them. Set `DS4_N1X_PREFETCH_EXPERTS=0` before startup to
+disable this read-ahead for comparisons.
+
+The N1X build packages the pinned llama.cpp HTTP runtime as
+`ds4-gguf-server.exe`. Run `python native/windows/smoke-http.py` against a
+running instance to check streaming, tool-result handling and cached token
+counts. The original Rust server and bench hosts keep their model loaders. Passing
 `-UnslothModel <first-shard.gguf>` to the build also checks a real expert on CUDA
 and runs the arithmetic smoke test with a 3 GiB Windows memory reserve.
 

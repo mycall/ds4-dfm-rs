@@ -7,17 +7,14 @@
 #include <stdio.h>
 #include <exception>
 #include <memory>
-#include <windows.h>
-#include <psapi.h>
+#include "working_set.hpp"
 
 struct ds4_bridge_gguf {
     struct llama_model *model;
     struct llama_context *ctx;
     struct llama_batch_ext *batch;
     llama_pos next_pos;
-    SIZE_T old_min, old_max;
-    DWORD old_flags;
-    bool changed_limit;
+    n1x_working_set working_set;
 };
 
 void ds4_bridge_gguf_close(ds4_bridge_gguf *s) {
@@ -25,8 +22,6 @@ void ds4_bridge_gguf_close(ds4_bridge_gguf *s) {
     if (s->batch) llama_batch_ext_free(s->batch);
     if (s->ctx) llama_free(s->ctx);
     if (s->model) llama_model_free(s->model);
-    if (s->changed_limit)
-        SetProcessWorkingSetSizeEx(GetCurrentProcess(), s->old_min, s->old_max, s->old_flags);
     delete s;
 }
 
@@ -61,25 +56,7 @@ ds4_bridge_gguf *ds4_bridge_gguf_open(const char *path, int gpu, int ctx,
     // Discard cold mapped expert pages before a large prefill displaces Windows.
     // Dedicated GPU memory is outside the pageable process working set.
     constexpr size_t GiB = size_t(1) << 30;
-    MEMORYSTATUSEX mem{sizeof(mem)};
-    PROCESS_MEMORY_COUNTERS counters{};
-    HANDLE process = GetCurrentProcess();
-    if (!GlobalMemoryStatusEx(&mem) || mem.ullAvailPhys <= 4 * GiB ||
-        !GetProcessMemoryInfo(process, &counters, sizeof(counters)) ||
-        !GetProcessWorkingSetSizeEx(process, &s->old_min, &s->old_max, &s->old_flags)) {
-        fprintf(stderr, "ds41: cannot establish a file-backed working set with 4 GiB free for Windows\n");
-        return nullptr;
-    }
-    SIZE_T max_ws = counters.WorkingSetSize + (mem.ullAvailPhys - 4 * GiB) / 2;
-    if (!(s->old_flags & QUOTA_LIMITS_HARDWS_MAX_ENABLE) || max_ws < s->old_max) {
-        if (!SetProcessWorkingSetSizeEx(process, s->old_min, max_ws,
-                (s->old_flags & ~QUOTA_LIMITS_HARDWS_MAX_DISABLE) | QUOTA_LIMITS_HARDWS_MAX_ENABLE)) {
-            fprintf(stderr, "ds41: cannot bound mapped weight residency (Windows error %lu)\n", GetLastError());
-            return nullptr;
-        }
-        s->changed_limit = true;
-    }
-    if (!s->changed_limit) max_ws = s->old_max;
+    if (!s->working_set.apply()) return nullptr;
     s->model = llama_model_load_from_file(path, p);
     if (!s->model || llama_vocab_n_tokens(llama_model_get_vocab(s->model)) != vocab)
         return nullptr;
@@ -92,7 +69,7 @@ ds4_bridge_gguf *ds4_bridge_gguf_open(const char *path, int gpu, int ctx,
         ggml_backend_dev_memory(device, &free_gpu, &total_gpu);
         c.moe_cache_size = free_gpu / 2;
         fprintf(stderr, "ds41: CUDA expert cache %.2f GiB, Windows working set limit %.2f GiB\n",
-                (double)c.moe_cache_size / GiB, (double)max_ws / GiB);
+                (double)c.moe_cache_size / GiB, (double)s->working_set.max_ws / GiB);
     }
     c.n_ctx = ctx;
     c.n_batch = c.n_ubatch = 32;

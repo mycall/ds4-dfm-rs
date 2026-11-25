@@ -1,0 +1,48 @@
+diff --git a/src/llama-moe-cache.cpp b/src/llama-moe-cache.cpp
+index ba35af0..3fd1224 100644
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -4,2 +4,3 @@
+ #include "llama-impl.h"
++#include "llama-mmap.h"
+ #include "llama-memory.h"
+@@ -836,2 +837,16 @@ struct llama_moe_cache::impl {
+         size_t bytes = 0;
++        // Give Windows one set of disk ranges for this layer before the CUDA
++        // uploads fault those pages in one expert at a time.
++        static const bool prefetch = std::getenv("DS4_N1X_PREFETCH_EXPERTS") &&
++                                     std::strcmp(std::getenv("DS4_N1X_PREFETCH_EXPERTS"), "0") != 0;
++        if (prefetch && !fills.empty()) {
++            llama_memory_ranges ranges;
++            ranges.reserve(l.experts.size() * fills.size());
++            for (const ggml_tensor * w : l.experts) {
++                for (const auto & f : fills) {
++                    ranges.push_back({(const uint8_t *) w->data + f.expert * w->nb[2], w->nb[2]});
++                }
++            }
++            llama_prefetch(std::move(ranges));
++        }
+         for (size_t ip = 0; ip < l.experts.size(); ++ip) {
+diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
+index 8bceea6..ef5b13e 100644
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -1417,2 +1417,5 @@ static void oaicompat_content_load_media(json & content, const server_chat_param
+         std::string type = json_value(p, "type", std::string());
++        if (type != "text" && type != "tool_reference") {
++            throw std::invalid_argument("the N1X GGUF endpoint accepts text only");
++        }
+         if (type == "image_url") {
+diff --git a/tools/server/server-http.cpp b/tools/server/server-http.cpp
+index d1f31e3..eb10b46 100644
+--- a/tools/server/server-http.cpp
++++ b/tools/server/server-http.cpp
+@@ -424,2 +424,8 @@ bool server_http_context::init_listener(const common_params & params) {
+     srv->set_pre_routing_handler([&params, managed_by_router, middleware_validate_api_key, middleware_server_state](const httplib::Request & req, httplib::Response & res) {
++        // The N1X text host exposes health and the OpenAI generation surface.
++        if (req.path != "/health" && req.path != "/v1/models" &&
++            req.path != "/v1/chat/completions" && req.path != "/v1/completions") {
++            res.status = 404;
++            return httplib::Server::HandlerResponse::Handled;
++        }
+         if (managed_by_router && (req.has_header("Origin") || req.has_header("Sec-Fetch-Site") || req.has_header("Sec-Fetch-Mode"))) {
