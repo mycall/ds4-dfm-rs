@@ -321,3 +321,6 @@ tests/naive_banks
 /tests/gemma4_ring
 /tests/test_inkling2_res
 /tests/test_inkling2_attn
+
+@ # Test scripts
+Test-Ds4.ps1
