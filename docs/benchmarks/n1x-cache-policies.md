@@ -29,7 +29,7 @@ The HTTP regression alternates six distinct histories of 32–72 tokens in the o
 | 12 MiB | 3 | 4 | 84 | 112 |
 | 512 MiB | 8 | 8 | 280 | 280 |
 
-The two policies returned the same completion text on every turn at each budget. To repeat, set `LLAMA_ARG_CACHE_RAM` to the tested budget and `DS4_N1X_KV_POLICY` to `oldest` or `adaptive` before starting a fresh N1X server. With the model and DSpark configuration above, run one matching check on that fresh server.
+The two policies returned the same completion text on every turn at each budget. To repeat, set `LLAMA_ARG_CACHE_RAM` to the tested budget and `DS4_N1X_KV_POLICY` to `oldest` or `adaptive` before starting a fresh N1X server with `-MaxSeqs 1 -Context 32768`. With the model and DSpark configuration above, run one matching check on that fresh server.
 
 ```powershell
 # 12 MiB, adaptive
@@ -39,6 +39,19 @@ python native/windows/smoke-http.py --expect-snapshot-restores 3
 # 512 MiB, either policy
 python native/windows/smoke-http.py --expect-snapshot-restores 8
 ```
+
+## Four concurrent conversations
+
+On November 25, the four-slot Windows host based on `cdc6ba5b` used the same six target shards, automatic expert-cache sizing, no drafter, and no snapshot RAM. The server opened four slots of 1,048,576 tokens each with a 512-row CUDA microbatch. A 2,048-row microbatch at that capacity had failed to allocate a 45.8 GiB prefill buffer.
+
+`python native/windows/smoke-http.py --concurrent --parent-lines 2080` sent a long parent prompt, three unrelated chats, then four simultaneous follow-ups to the same resident server. Times measure the first nonempty streamed content.
+
+| Parent request | Prompt tokens | Cached tokens | Server prefill | Time to first content |
+|---|---:|---:|---:|---:|
+| Initial | 26,080 | 1 | 432.94 s | 433.00 s |
+| After the three other chats | 26,097 | 26,082 | 2.03 s | 2.19 s |
+
+All four follow-ups overlapped, preserved their own private words and processed 15 new prompt tokens each. Their times to first content ranged from 1.73 to 2.19 s. During the long prefill, two Windows samples on the model drive showed 2.53 and 3.16 GB/s of physical reads, 51% and 58% disk active time, and 2.60 and 3.01 GB/s of model-process reads, respectively. These are samples from one run. The integration test checks reuse, response isolation and overlap without machine-specific latency thresholds.
 
 ## ARM64 host measurements
 

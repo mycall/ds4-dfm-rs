@@ -122,14 +122,17 @@ opencode run -m ds4-drm-rs/DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS "Say hell
 ```
 
 `start` waits for readiness at `http://127.0.0.1:8081/health`. Its default is
-one 1,048,576-token slot. Override with `-Context`, `-Model` or `-Backend cpu`.
+four slots with a requested context of 1,048,576 tokens each. Use `-MaxSeqs`
+to change concurrency and `-Context` to change the per-slot capacity.
+The slots share model weights and each needs its own attention state.
 For OpenCode, set the provider base URL to `http://127.0.0.1:8081/v1`, enable
 text and tools, and match the configured context to the server. The wire model ID
 is `DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS`. Streaming chat completions
 return OpenAI tool calls; the client executes them and sends back tool results.
 The resident graph retains its expert cache and reuses matching prompt tokens
-across turns. The CUDA HTTP host shares expert uploads across prompt batches of up to 2,048
-tokens. It can read two missing expert ranges from the GGUF shards concurrently
+across turns. The CUDA HTTP host shares expert uploads across prompt microbatches
+of up to 2,048 tokens. The four-slot 1M default uses 512 rows to fit the
+prefill workspace. It can read two missing expert ranges from the GGUF shards concurrently
 using the same three pinned buffers (48 MiB total). Each buffer is reused after
 its GPU copy completes. Set `$env:DS4_N1X_EXPERT_READ_DEPTH = '1'` before
 starting the server to serialize disk reads. Unsupported or incomplete
@@ -152,7 +155,7 @@ $env:DS4_N1X_SEED_EXPERTS = 'learned'
 $env:LLAMA_ARG_CACHE_RAM = '512'
 $env:LLAMA_ARG_SPEC_DRAFT_MODEL = Join-Path $HOME 'models/deepseek-ai/DeepSeek-V4.1-Flash-1017/experimental/DeepSeek-V4.1-Flash-1017-DSpark-IQ2_XXS-imx-dflash.gguf'
 $env:LLAMA_ARG_SPEC_DRAFT_N_MAX = '5'
-.\ds4-n1x.ps1 start
+.\ds4-n1x.ps1 start -MaxSeqs 1 -Context 32768
 ```
 
 On this 40-layer, 384-expert configuration, `learned` (also `1`) uses per-layer
@@ -178,7 +181,7 @@ with no overrides uses automatic cache sizing.
 With 512 MiB, switching away from a 3,228-token prompt and returning to it
 restored 3,224 tokens. A follow-up to an 11,056-token coding prompt restored
 11,249 tokens including the previous answer and processed 27 new tokens.
-With the default of zero, the active conversation still reuses its prefix.
+With the default of zero, conversations retained in the live slots still reuse their prefixes.
 With a positive RAM budget, `DS4_N1X_KV_POLICY=adaptive` is the default.
 The cache favors snapshots that restore successfully and adjusts eviction
 when an evicted text history returns. Select `oldest` for oldest-saved
@@ -187,7 +190,12 @@ See the [N1X cache measurements](docs/benchmarks/n1x-cache-policies.md) for
 the tested budgets, expert read volumes and workload tradeoffs.
 
 Run `python native/windows/smoke-http.py --switch-chat`
-to check tool-call streaming and prefix restoration across conversations.
+to check tool-call streaming and prefix reuse across conversations. Use one
+slot and a positive snapshot RAM budget to exercise restoration from RAM.
+Run `python native/windows/smoke-http.py --concurrent` to check that four
+independent agent streams overlap and retain their own prefixes. Add
+`--parent-lines 2048` for a long first prompt. The check reports prompt
+tokens, cache hits, prefill time and time to first streamed content.
 
 The N1X build packages the pinned llama.cpp HTTP runtime as
 `ds4-gguf-server.exe`. Run `python native/windows/smoke-http.py` against a

@@ -12,10 +12,15 @@ param(
     [ValidateRange(1, 2147483647)]
     [int]$MaxTokens = 64,
     [ValidateRange(1, 2147483647)]
-    [int]$Context = 512
+    [int]$Context = 512,
+    [ValidateRange(1, 2147483647)]
+    [int]$MaxSeqs
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PSBoundParameters.ContainsKey('MaxSeqs') -and $Action -ne 'start') {
+    throw 'Choose -MaxSeqs when starting the resident server.'
+}
 $Backend = $Backend.ToLowerInvariant()
 $exe = Join-Path $PSScriptRoot 'target/n1x/ds4.exe'
 $server = Join-Path $PSScriptRoot 'target/n1x/ds4-gguf-server.exe'
@@ -28,13 +33,14 @@ switch ($Action) {
     'help' {
         @'
 .\ds4-n1x.ps1 status                       Show executable, first shard, and active CLI processes
-.\ds4-n1x.ps1 start                        Serve the model on localhost:8081 (default context 1048576)
+.\ds4-n1x.ps1 start                        Serve four slots on localhost:8081 (1048576 tokens per slot)
 .\ds4-n1x.ps1 stop                         Release the resident model and GPU cache
 .\ds4-n1x.ps1 build                        Build the native hosts and run model-free smoke checks
 .\ds4-n1x.ps1 test                         Test the resident HTTP server, or the CLI when stopped
 .\ds4-n1x.ps1 run "What is two plus two?"  Generate one answer and exit
 
 Start, run and test accept -Backend cuda|cpu and -Model <first-shard.gguf>.
+Start accepts -MaxSeqs and -Context (tokens per slot).
 Run also accepts -MaxTokens (default 64) and -Context (default 512).
 '@
         return
@@ -88,6 +94,7 @@ Run also accepts -MaxTokens (default 64) and -Context (default 512).
             RedirectStandardOutput = "$log.stdout"
             PassThru = $true
         }
+        if ($PSBoundParameters.ContainsKey('MaxSeqs')) { $launch.ArgumentList += $MaxSeqs }
         $process = Start-Process @launch
         Write-Host "Loading the model (PID $($process.Id)). Log: $log"
         $deadline = (Get-Date).AddMinutes(5)
