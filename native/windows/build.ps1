@@ -70,7 +70,7 @@ try {
         if (!(Test-Path -LiteralPath $obj)) { throw "Missing $obj" }
         $obj
     }
-    & "$PSScriptRoot/build-gguf.ps1" -Out $out -CpuOnly:$GgufCpuOnly
+    & "$PSScriptRoot/build-gguf.ps1" -Out $out -CpuOnly:$GgufCpuOnly -Smoke:$Smoke
     $libdirs = @("/LIBPATH:$cudaLib", "/LIBPATH:$dep/lib")
     $libs = @('cuda.lib', 'cublas.lib', 'cudart.lib', 'pthreadVC3.lib', 'mman.lib', 'OneCore.lib')
     $env:CMAKE_TOOLCHAIN_FILE_aarch64_pc_windows_msvc = Join-Path $PSScriptRoot 'runtime.cmake'

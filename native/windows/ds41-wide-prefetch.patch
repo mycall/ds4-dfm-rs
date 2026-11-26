@@ -1,0 +1,67 @@
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3182,6 +3182,10 @@
+         }
+ 
+         st.ids = ids;
++    }
++
++    if (lctx->moe_cache) {
++        lctx->moe_cache->prefetch_misses(backend, src, st.used, ids->ne[1]);
+     }
+ 
+     // group consecutive experts and copy them together
+--- a/src/llama-moe-cache.h
++++ b/src/llama-moe-cache.h
+@@ -56,6 +56,9 @@
+     // ggml_backend_sched copy callback, returns false if src is not a slot map
+     bool copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph);
+ 
++    // Read ahead selected host weights that the large-batch copy path will upload.
++    void prefetch_misses(ggml_backend_t backend, const ggml_tensor * w, const std::vector<bool> & used, int64_t n_tokens) const;
++
+     // for large batches: copy the experts of w that are in the cache, starting at expert e and up to expert last, to the copy dst of w
+     // returns the number of experts copied, 0 if expert e is not in the cache
+     int64_t copy_experts(ggml_backend_t backend, const ggml_tensor * w, ggml_tensor * dst, int64_t e, int64_t last);
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -981,6 +981,39 @@
+     return pimpl->copy(backend, src, dst, graph);
+ }
+ 
++void llama_moe_cache::prefetch_misses(ggml_backend_t backend, const ggml_tensor * w, const std::vector<bool> & used, int64_t n_tokens) const {
++    static const bool enabled = [] {
++        const char * setting = std::getenv("DS4_N1X_PREFETCH_WIDE");
++        if (!setting) {
++            setting = std::getenv("DS4_N1X_PREFETCH_EXPERTS");
++        }
++        return setting && std::strcmp(setting, "0") != 0;
++    }();
++    if (!enabled || n_tokens <= impl::max_batch) {
++        return;
++    }
++
++    const auto it = pimpl->bindings.find(w);
++    if (it == pimpl->bindings.end()) {
++        return;
++    }
++    const auto & binding = it->second;
++    const auto & group = pimpl->groups[pimpl->layers[binding.il].ig];
++    if (backend != pimpl->devices[group.id].backend) {
++        return;
++    }
++
++    // The slot map is stable during this copy. GPU hits do not need host pages.
++    const int32_t * slots = group.lru.slot_map[binding.il];
++    llama_memory_ranges ranges;
++    for (size_t e = 0; e < used.size(); ++e) {
++        if (used[e] && (!slots || slots[e] >= group.n_slots)) {
++            ranges.push_back({(const uint8_t *) w->data + e*w->nb[2], w->nb[2]});
++        }
++    }
++    llama_prefetch(std::move(ranges));
++}
++
+ int64_t llama_moe_cache::copy_experts(ggml_backend_t backend, const ggml_tensor * w, ggml_tensor * dst, int64_t e, int64_t last) {
+     return pimpl->copy_experts(backend, w, dst, e, last);
+ }

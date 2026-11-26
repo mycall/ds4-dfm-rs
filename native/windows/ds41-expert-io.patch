@@ -1,0 +1,268 @@
+--- a/src/llama-mmap.h
++++ b/src/llama-mmap.h
+@@ -56,6 +56,10 @@
+     size_t size() const;
+     void * addr() const;
+ 
++    // Read into aligned staging space and return the first requested byte, or nullptr to use the mapping.
++    const void * read_block(size_t offset, size_t bytes, void * staging, size_t capacity,
++                            struct ds41_expert_read * request = nullptr) const;
++
+     void unmap_fragment(size_t first, size_t last);
+ 
+     static const bool SUPPORTED;
+--- a/src/llama-mmap.cpp
++++ b/src/llama-mmap.cpp
+@@ -1,4 +1,5 @@
+ #include "llama-mmap.h"
++#include "ds41_expert_read.hpp"
+ 
+ #include "llama-impl.h"
+ 
+@@ -811,6 +812,7 @@
+     }
+ #elif defined(_WIN32)
+     HANDLE hMapping = nullptr;
++    HANDLE direct = INVALID_HANDLE_VALUE;
+ 
+     impl(struct llama_file * file, size_t prefetch, bool numa, const llama_mmap::ranges & lazy_ranges) {
+         GGML_UNUSED(numa);
+@@ -832,6 +834,13 @@
+         if (addr == NULL) {
+             CloseHandle(hMapping);
+             throw std::runtime_error(format("MapViewOfFile failed: %s", llama_format_win_err(error).c_str()));
++        }
++
++        const char * setting = std::getenv("DS4_N1X_DIRECT_EXPERT_IO");
++        if (setting && std::strcmp(setting, "0") != 0) {
++            // Reopen the same file object rather than resolving a shard path again.
++            direct = ReOpenFile(hFile, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++                                FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED);
+         }
+ 
+         if (prefetch > 0) {
+@@ -867,6 +876,9 @@
+     }
+ 
+     ~impl() {
++        if (direct != INVALID_HANDLE_VALUE) {
++            CloseHandle(direct);
++        }
+         if (hMapping) {
+             if (addr) {
+                 if (!UnmapViewOfFile(addr)) {
+@@ -908,6 +920,35 @@
+ 
+ size_t llama_mmap::size() const { return pimpl->size; }
+ void * llama_mmap::addr() const { return pimpl->addr; }
++
++const void * llama_mmap::read_block(size_t offset, size_t bytes, void * staging, size_t capacity,
++                                    ds41_expert_read * request) const {
++#if defined(_WIN32)
++    constexpr size_t sector = 4096;
++    const size_t prefix = offset % sector;
++    if (pimpl->direct == INVALID_HANDLE_VALUE || bytes > capacity || capacity - bytes < prefix + sector - 1) {
++        return nullptr;
++    }
++    const size_t start = offset - prefix;
++    const size_t length = (prefix + bytes + sector - 1) & ~(sector - 1);
++    if (length > UINT32_MAX) {
++        return nullptr;
++    }
++    if (request) {
++        if (request->start(pimpl->direct, start, staging, static_cast<DWORD>(length), prefix + bytes)) {
++            return static_cast<uint8_t *>(staging) + prefix;
++        }
++    } else {
++        ds41_expert_read local;
++        if (local.start(pimpl->direct, start, staging, static_cast<DWORD>(length), prefix + bytes) && local.finish()) {
++            return static_cast<uint8_t *>(staging) + prefix;
++        }
++    }
++#else
++    GGML_UNUSED(offset, bytes, staging, capacity, request);
++#endif
++    return nullptr;
++}
+ 
+ void llama_mmap::unmap_fragment(size_t first, size_t last) { pimpl->unmap_fragment(first, last); }
+ 
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -1068,6 +1068,8 @@
+ 
+     bool has_tensor_overrides() const;
+ 
++    const void * read_mapped_block(const void * src, size_t bytes, void * staging, size_t capacity,
++                            struct ds41_expert_read * request = nullptr) const;
+     const struct ggml_tensor * get_tensor(const char * name) const;
+ 
+     // the RoPE of a layer, used by both the model graph and the K-shift
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -3037,6 +3037,18 @@
+     return pimpl->has_tensor_overrides;
+ }
+ 
++const void * llama_model::read_mapped_block(const void * src, size_t bytes, void * staging, size_t capacity,
++                                            ds41_expert_read * request) const {
++    const auto addr = reinterpret_cast<uintptr_t>(src);
++    for (const auto & map : pimpl->mappings) {
++        const auto base = reinterpret_cast<uintptr_t>(map->addr());
++        if (addr >= base && addr - base < map->size() && bytes <= map->size() - (addr - base)) {
++            return map->read_block(addr - base, bytes, staging, capacity, request);
++        }
++    }
++    return nullptr;
++}
++
+ const ggml_tensor * llama_model::get_tensor(const char * name) const {
+     auto it = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
+             [name](const std::pair<std::string, ggml_tensor *> & it) {
+--- a/src/llama-moe-cache.h
++++ b/src/llama-moe-cache.h
+@@ -66,6 +66,8 @@
+     // returns the number of experts copied, 0 if expert e is not in the cache
+     int64_t copy_experts(ggml_backend_t backend, const ggml_tensor * w, ggml_tensor * dst, int64_t e, int64_t last);
+ 
++    void flush_uploads(ggml_backend_t backend);
++    void upload_experts(ggml_backend_t backend, ggml_tensor * dst, const void * src, size_t offset, size_t bytes);
+     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;
+ 
+ private:
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -1,5 +1,6 @@
+ #include "llama-moe-cache.h"
+ 
++#include "ds41_expert_upload.hpp"
+ #include "llama-graph.h"
+ #include "llama-impl.h"
+ #include "llama-mmap.h"
+@@ -331,6 +332,7 @@
+         ggml_context_ptr ctx;
+         ggml_backend_buffer_ptr buf;
+         size_t buf_size = 0;
++        std::unique_ptr<ds41_expert_upload> upload;
+     };
+ 
+     // layers of the same device with the same expert tensor layout share the banks and the LRU of a group
+@@ -370,6 +372,7 @@
+ 
+     static constexpr int64_t max_batch = 32;
+ 
++    const llama_model & source_model;
+     int32_t n_expert_used;
+ 
+     stats stats_small; // up to 8 tokens per ubatch
+@@ -402,7 +405,7 @@
+     ggml_context_ptr ctx_views;
+ 
+     impl(const llama_model & model, bool no_alloc, const std::vector<ggml_backend_t> & backends, const std::vector<ggml_backend_buffer_type_t> & bufts, size_t size, float cpu_share) :
+-            n_expert_used(model.hparams.n_expert_used_max()), layers(model.layers.size()), cpu_share(std::clamp(cpu_share, 0.0f, 1.0f)) {
++            source_model(model), n_expert_used(model.hparams.n_expert_used_max()), layers(model.layers.size()), cpu_share(std::clamp(cpu_share, 0.0f, 1.0f)) {
+         for (size_t i = 0; i < backends.size(); ++i) {
+             const auto dev_type = ggml_backend_dev_type(ggml_backend_get_device(backends[i]));
+             if (dev_type == GGML_BACKEND_DEVICE_TYPE_GPU || dev_type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+@@ -472,6 +475,10 @@
+                 continue;
+             }
+             ggml_backend_dev_t dev = ggml_backend_get_device(d.backend);
++            const char * setting = std::getenv("DS4_N1X_DIRECT_EXPERT_IO");
++            if (!no_alloc && setting && std::strcmp(setting, "0") != 0) {
++                d.upload = std::make_unique<ds41_expert_upload>(dev);
++            }
+             if (split_by_free) {
+                 size_t free;
+                 size_t total;
+@@ -638,6 +645,16 @@
+         }
+     }
+ 
++    void upload_experts(ggml_backend_t backend, ggml_tensor * dst, const void * src, size_t offset, size_t bytes) {
++        for (auto & d : devices) {
++            if (d.backend == backend && d.upload) {
++                d.upload->send(source_model, backend, dst, (const uint8_t *) src, offset, bytes);
++                return;
++            }
++        }
++        ggml_backend_tensor_set_async(backend, dst, src, offset, bytes);
++    }
++
+     // the device that caches layer il
+     ggml_backend_t backend(int32_t il) const {
+         return devices[groups[layers[il].ig].id].backend;
+@@ -873,10 +890,13 @@
+                 while (i + n < fills.size() && fills[i + n].expert == fills[i].expert + (int32_t) n && fills[i + n].slot == fills[i].slot + (int32_t) n) {
+                     n++;
+                 }
+-                ggml_backend_tensor_set_async(backend, bank, (const uint8_t *) w->data + fills[i].expert*expert_size, fills[i].slot*expert_size, n*expert_size);
++                upload_experts(backend, bank, (const uint8_t *) w->data + fills[i].expert*expert_size, fills[i].slot*expert_size, n*expert_size);
+                 bytes += n*expert_size;
+                 i += n;
+             }
++        }
++        if (devices[g.id].upload) {
++            devices[g.id].upload->flush(backend);
+         }
+         return bytes;
+     }
+@@ -1085,6 +1105,18 @@
+     return pimpl->copy_experts(backend, w, dst, e, last);
+ }
+ 
++void llama_moe_cache::flush_uploads(ggml_backend_t backend) {
++    for (auto & device : pimpl->devices) {
++        if (device.backend == backend && device.upload) {
++            device.upload->flush(backend);
++        }
++    }
++}
++
++void llama_moe_cache::upload_experts(ggml_backend_t backend, ggml_tensor * dst, const void * src, size_t offset, size_t bytes) {
++    pimpl->upload_experts(backend, dst, src, offset, bytes);
++}
++
+ std::map<ggml_backend_buffer_type_t, size_t> llama_moe_cache::memory_breakdown() const {
+     std::map<ggml_backend_buffer_type_t, size_t> res;
+     for (const auto & d : pimpl->devices) {
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3164,6 +3164,13 @@
+         return true;
+     }
+ 
++    auto upload = [&](const void * data, size_t offset, size_t bytes) {
++        if (lctx->moe_cache) {
++            lctx->moe_cache->upload_experts(backend, dst, data, offset, bytes);
++        } else {
++            ggml_backend_tensor_set_async(backend, dst, data, offset, bytes);
++        }
++    };
+     const int64_t n_expert    = src->ne[2];
+     const size_t  expert_size = src->nb[2];
+ 
+@@ -3211,7 +3218,7 @@
+                 continue;
+             }
+             if (next < e) {
+-                ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + next*expert_size, next*expert_size, (e - next)*expert_size);
++                upload((const uint8_t *) src->data + next*expert_size, next*expert_size, (e - next)*expert_size);
+             }
+             e   += n;
+             next = e;
+@@ -3222,10 +3229,13 @@
+         const size_t padding = last < n_expert - 1 ? std::min<size_t>(expert_size, 512) : 0;
+         const size_t size    = (last + 1 - next)*expert_size + padding;
+         if (size > 0) {
+-            ggml_backend_tensor_set_async(backend, dst, (const uint8_t *) src->data + offset, offset, size);
++            upload((const uint8_t *) src->data + offset, offset, size);
+         }
+ 
+         first = last + 1;
++    }
++    if (lctx->moe_cache) {
++        lctx->moe_cache->flush_uploads(backend);
+     }
+ 
+     return true;

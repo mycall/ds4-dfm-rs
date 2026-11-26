@@ -1,5 +1,5 @@
 # Called by build.ps1 inside its native ARM64 VS environment.
-param([Parameter(Mandatory)][string]$Out, [switch]$CpuOnly)
+param([Parameter(Mandatory)][string]$Out, [switch]$CpuOnly, [switch]$Smoke)
 $ErrorActionPreference = 'Stop'
 $pin = '244640b7f26e2a7301b27a24edc4f7feaf97d52f'
 $src = Join-Path $Out 'llama-src'
@@ -9,11 +9,14 @@ if (!(Test-Path "$src/.git")) {
     Invoke-Checked git @('-C', $src, '-c', 'core.longpaths=true', 'checkout', '--detach', 'FETCH_HEAD')
 }
 if ((& git -C $src rev-parse HEAD) -ne $pin) { throw "Expected llama.cpp $pin in $src" }
-foreach ($name in @('ds41-demand-map.patch', 'ds41-http.patch')) {
+foreach ($name in @('ds41-demand-map.patch', 'ds41-http.patch', 'ds41-wide-prefetch.patch', 'ds41-seed-experts.patch', 'ds41-expert-io.patch')) {
     $patch = Join-Path $PSScriptRoot $name
-    & git -C $src apply --reverse --check $patch 2>$null
+    # Later patches can extend the context around an earlier hunk.
+    & git -C $src apply --reverse --check -C1 $patch 2>$null
     if ($LASTEXITCODE) { Invoke-Checked git @('-C', $src, 'apply', $patch) }
 }
+Copy-Item -LiteralPath "$PSScriptRoot/ds41_expert_upload.hpp" -Destination "$src/src/ds41_expert_upload.hpp" -Force
+Copy-Item -LiteralPath "$PSScriptRoot/ds41_expert_read.hpp" -Destination "$src/src/ds41_expert_read.hpp" -Force
 $cuda = if ($CpuOnly) { 'OFF' } else { 'ON' }
 $build = Join-Path $Out $(if ($CpuOnly) { 'llama-build' } else { 'llama-cuda' })
 $llvm = Join-Path $env:VCINSTALLDIR 'Tools/Llvm/ARM64/bin'
@@ -38,3 +41,11 @@ Invoke-Checked clang-cl @('/nologo', '/O2', '/MD', '/clang:-mcpu=native', '/std:
     '/link', "/OUT:$Out/ds4-gguf-server.exe", "$build/tools/server/llama-server-impl.lib",
     "$build/src/llama.lib", "$build/ggml/src/ggml.lib", "$build/ggml/src/ggml-base.lib")
 Copy-Item "$build/bin/*.dll" -Destination $Out -Force
+if ($Smoke) {
+    $objs = "$build/src/CMakeFiles/llama.dir"
+    Invoke-Checked clang-cl @('/nologo', '/O2', '/MD', '/std:c++17', '/EHsc', "-I$src/src",
+        "$PSScriptRoot/test_expert_io.cpp", "/Fo$Out/test_expert_io.obj", '/link', "/OUT:$Out/test_expert_io.exe",
+        "$objs/llama-mmap.cpp.obj", "$objs/llama-impl.cpp.obj", "$build/src/llama.lib",
+        "$build/ggml/src/ggml-base.lib", "$build/ggml/src/ggml.lib")
+    Invoke-Checked "$Out/test_expert_io.exe" @("$PSScriptRoot/../../tests/fixtures/ds41/vq/v3_12b.blob")
+}

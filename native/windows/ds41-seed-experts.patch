@@ -1,0 +1,143 @@
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3172,6 +3172,9 @@
+         ggml_backend_tensor_get_async(backend, ids, st.ids_data.data(), 0, ggml_nbytes(ids));
+         ggml_backend_synchronize(backend);
+ 
++        if (lctx->moe_cache && ids->ne[1] >= 128) {
++            lctx->moe_cache->seed_from_routes(backend, src, ids, st.ids_data.data());
++        }
+         st.used.assign(n_expert, false);
+         for (int64_t i1 = 0; i1 < ids->ne[1]; i1++) {
+             for (int64_t i0 = 0; i0 < ids->ne[0]; i0++) {
+--- a/src/llama-moe-cache.h
++++ b/src/llama-moe-cache.h
+@@ -53,6 +53,9 @@
+     ggml_tensor * build_experts(const llm_graph_context & g, const llama_moe_cache_lookup & lookup,
+             ggml_tensor * cur, ggml_tensor * selected_experts, llama_moe_cache_build_experts_t build, void * user_data) const;
+ 
++    // Initialize vacant expert slots from a wide prompt's routing frequencies.
++    void seed_from_routes(ggml_backend_t backend, const ggml_tensor * w, const ggml_tensor * routes, const int32_t * ids);
++
+     // ggml_backend_sched copy callback, returns false if src is not a slot map
+     bool copy(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph);
+ 
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -350,6 +350,7 @@
+         ggml_tensor * slot_map_cpu = nullptr; // looked up in place of slot_map by the graphs with a CPU part, if cpu_share > 0, its data is not used
+         ggml_tensor * cpu_map  = nullptr;   // I32 [1, n_expert] in host memory, if cpu_share > 0
+         std::vector<int32_t> cpu_experts;   // experts set in cpu_map
++        bool prompt_seeded = false;
+         uint32_t cpu_acc = 0;               // fraction of a miss carried over to the next plan, in 1/65536
+         std::vector<ggml_tensor *> experts; // host expert tensors, in the order of the banks
+     };
+@@ -833,6 +834,20 @@
+             }
+         }
+ 
++        const size_t bytes = upload_fills(backend, l, g);
++        stats & st = ids.size() <= (size_t) 8*n_expert_used ? stats_small : stats_large;
++        st.hits   += n_hit;
++        st.misses += fills.size() + cpu.size();
++        st.cpu    += cpu.size();
++        st.bytes  += bytes;
++
++        // the next copy synchronizes the backend before it changes the slot map again
++        ggml_backend_tensor_set_async(backend, dst, l.slot_map->data, 0, ggml_nbytes(l.slot_map));
++
++        return true;
++    }
++
++    size_t upload_fills(ggml_backend_t backend, const layer & l, const group & g) {
+         // upload the missing experts, consecutive experts going to consecutive slots are uploaded together
+         size_t bytes = 0;
+         // Give Windows one set of disk ranges for this layer before the CUDA
+@@ -863,17 +878,7 @@
+                 i += n;
+             }
+         }
+-
+-        stats & st = ids.size() <= (size_t) 8*n_expert_used ? stats_small : stats_large;
+-        st.hits   += n_hit;
+-        st.misses += fills.size() + cpu.size();
+-        st.cpu    += cpu.size();
+-        st.bytes  += bytes;
+-
+-        // the next copy synchronizes the backend before it changes the slot map again
+-        ggml_backend_tensor_set_async(backend, dst, l.slot_map->data, 0, ggml_nbytes(l.slot_map));
+-
+-        return true;
++        return bytes;
+     }
+ 
+     void log_stats() const {
+@@ -899,6 +904,68 @@
+ 
+ llama_moe_cache::~llama_moe_cache() = default;
+ 
++void llama_moe_cache::seed_from_routes(ggml_backend_t backend, const ggml_tensor * w,
++        const ggml_tensor * routes, const int32_t * ids) {
++    static const bool enabled = [] {
++        const char * setting = std::getenv("DS4_N1X_SEED_EXPERTS");
++        return setting && std::strcmp(setting, "0") != 0;
++    }();
++    if (!enabled) {
++        return;
++    }
++    const auto it = pimpl->bindings.find(w);
++    if (it == pimpl->bindings.end()) {
++        return;
++    }
++    const int32_t il = it->second.il;
++    auto & layer = pimpl->layers[il];
++    auto & group = pimpl->groups[layer.ig];
++    if (layer.prompt_seeded || backend != pimpl->devices[group.id].backend) {
++        return;
++    }
++    layer.prompt_seeded = true;
++
++    // Keep existing entries. Shared banks leave each layer its share of empty slots.
++    auto & lru = group.lru;
++    const int32_t * slots = lru.slot_map[il];
++    if (!slots) {
++        return;
++    }
++    const int32_t resident = std::count_if(slots, slots + lru.n_expert, [&](int32_t s) { return s < group.n_slots; });
++    const int32_t quota = group.n_slots / (int32_t) group.layers.size();
++    const int32_t vacant = std::min(quota - resident, group.n_slots - lru.n_filled);
++    if (vacant <= 0) {
++        return;
++    }
++
++    std::vector<int32_t> frequency(lru.n_expert), candidates;
++    for (int64_t row = 0; row < routes->ne[1]; ++row) {
++        for (int64_t k = 0; k < routes->ne[0]; ++k) {
++            const int32_t id = ids[(row*routes->nb[1] + k*routes->nb[0])/sizeof(*ids)];
++            GGML_ASSERT(id >= 0 && id < lru.n_expert);
++            ++frequency[id];
++        }
++    }
++    for (int32_t e = 0; e < lru.n_expert; ++e) {
++        if (frequency[e] && slots[e] >= group.n_slots) {
++            candidates.push_back(e);
++        }
++    }
++    const size_t n = std::min<size_t>(vacant, candidates.size());
++    if (n == 0) {
++        return;
++    }
++    std::partial_sort(candidates.begin(), candidates.begin() + n, candidates.end(), [&](int32_t a, int32_t b) {
++        return frequency[a] != frequency[b] ? frequency[a] > frequency[b] : a < b;
++    });
++    size_t hits;
++    // Seed weights without advancing the decode clock or moving any work to the CPU.
++    GGML_ASSERT(lru.plan(il, candidates.data(), n, 0, 0, 0, [](size_t) { return size_t(0); },
++                pimpl->fills, pimpl->cpu, hits));
++    pimpl->upload_fills(backend, layer, group);
++}
++
++
+ ggml_tensor * llama_moe_cache::get_experts(const ggml_tensor * w) const {
+     return pimpl->get_experts(w);
+ }

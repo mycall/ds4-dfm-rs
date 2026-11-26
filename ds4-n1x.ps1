@@ -75,7 +75,8 @@ Run also accepts -MaxTokens (default 64) and -Context (default 512).
         }
         if (!(Test-Path -LiteralPath $server -PathType Leaf)) { throw 'Run .\ds4-n1x.ps1 build first.' }
         $shard = (Get-Item -LiteralPath $Model -ErrorAction Stop).FullName
-        if (Get-NetTCPConnection -State Listen -LocalPort 8081 -ErrorAction SilentlyContinue) {
+        $network = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties()
+        if ($network.GetActiveTcpListeners().Port -contains 8081) {
             throw 'Port 8081 is in use.'
         }
         if (!$PSBoundParameters.ContainsKey('Context')) { $Context = 32768 }

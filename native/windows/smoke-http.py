@@ -1,4 +1,5 @@
 """Exercise the resident N1X endpoint, including streamed tool calls and KV reuse."""
+import argparse
 import json
 import urllib.request
 
@@ -12,6 +13,10 @@ def complete(body):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--switch-chat", action="store_true",
+                        help="check RAM prompt restoration across an unrelated chat")
+    args = parser.parse_args()
     with urllib.request.urlopen(BASE + "/models", timeout=5) as response:
         model = json.load(response)["data"][0]["id"]
     messages = [{"role": "user", "content": "Call lookup with key abc. Then reply with just the value it returns."}]
@@ -39,6 +44,10 @@ def main():
     assert done and finish == "tool_calls" and call_id and name == "lookup", (done, finish, call_id, name)
     assert json.loads(arguments) == {"key": "abc"}, arguments
     print(f"Streamed {name}({arguments})", flush=True)
+    if args.switch_chat:
+        other = [{"role": "user", "content": "Return the digit 7."}]
+        with complete(dict(model=model, messages=other, temperature=0, max_tokens=8)) as response:
+            assert json.load(response)["usage"]["completion_tokens"] > 0
     messages += [{"role": "assistant", "content": None, "tool_calls": [
         {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}]},
         {"role": "tool", "tool_call_id": call_id, "content": "72519"}]
@@ -47,6 +56,9 @@ def main():
     answer = reply["choices"][0]["message"]["content"].strip()
     cached = reply["usage"].get("prompt_tokens_details", {}).get("cached_tokens", 0)
     assert "72519" in answer and cached > 0, (answer, cached, reply.get("timings"))
+    if args.switch_chat:
+        # Restoring the tool-bearing prompt should recover much more than the common BOS.
+        assert cached >= 128, (cached, reply.get("timings"))
     print(f"Tool result returned {answer!r}; reused {cached} prompt tokens.")
 
 

@@ -128,10 +128,51 @@ text and tools, and match the configured context to the server. The wire model I
 is `DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS`. Streaming chat completions
 return OpenAI tool calls; the client executes them and sends back tool results.
 The resident graph retains its expert cache and reuses matching prompt tokens
-across turns. A cold prompt still reads expert weights from disk. The CUDA
-server asks Windows for the missing expert ranges of each layer together
-before uploading them. Set `DS4_N1X_PREFETCH_EXPERTS=0` before startup to
-disable this read-ahead for comparisons.
+across turns. The CUDA HTTP host shares expert uploads across prompt batches of up to 2,048
+tokens. It can read two missing expert ranges from the GGUF shards concurrently
+using the same three pinned buffers (48 MiB total). Each buffer is reused after
+its GPU copy completes. Set `$env:DS4_N1X_EXPERT_READ_DEPTH = '1'` before
+starting the server to serialize disk reads. Unsupported or incomplete
+reads use the mapped tensor bytes. Set `$env:DS4_N1X_DIRECT_EXPERT_IO = '0'`
+before startup to use mapped reads with Windows read-ahead.
+In that mode, `DS4_N1X_PREFETCH_WIDE=0` disables wide-batch read-ahead.
+On the 65-token sort in Delta's allocation benchmark, two fresh N1X runs
+with overlapping reads took 8.34 and 8.37 s. The previous serial reader took
+9.16 and 9.23 s. Each run requested the same 29.93 GiB of expert weights.
+
+On a dedicated RTX Spark N1X, the following settings use a 73.5 GiB GPU cache
+and the IQ2_XXS imatrix DSpark sidecar. The target is the same six-shard
+UD-IQ2_XXS model. Set the draft path to your converted `dflash` GGUF and
+start the server from the same PowerShell session.
+
+```powershell
+$env:LLAMA_ARG_N_CPU_MOE = '40'
+$env:LLAMA_ARG_MOE_CACHE_MIB = '75264'
+$env:DS4_N1X_SEED_EXPERTS = '1'
+$env:LLAMA_ARG_CACHE_RAM = '512'
+$env:LLAMA_ARG_SPEC_DRAFT_MODEL = Join-Path $HOME 'models/deepseek-ai/DeepSeek-V4.1-Flash-1017/experimental/DeepSeek-V4.1-Flash-1017-DSpark-IQ2_XXS-imx-dflash.gguf'
+$env:LLAMA_ARG_SPEC_DRAFT_N_MAX = '5'
+.\ds4-n1x.ps1 start
+```
+
+Seeding fills vacant slots using the first prompt batch of at least 128
+tokens and keeps each layer within its share of the cache. On two fresh starts
+using [Delta's coding fixture](https://github.com/mycall/delta-inference-engine/blob/5f9a130da793733d38a5c989d35f4d2e09d2a1a6/tools/v41/bench_allocation.py),
+the 260-token loop took 11.43–11.52 s and the 6,856-token sort took
+41.03–41.96 s. Peak GPU usage sampled during
+those runs was 95,201 of 98,304 MiB, with at least 10.49 GiB of physical
+RAM available to Windows at the sample times. For a profile without a drafter,
+the 14-resident-layer configuration uses
+`LLAMA_ARG_N_CPU_MOE=26` and `LLAMA_ARG_MOE_CACHE_MIB=16384`. A fresh shell
+with no overrides uses automatic cache sizing.
+
+`LLAMA_ARG_CACHE_RAM` caps host memory in MiB for saved conversations.
+With 512 MiB, switching away from a 3,228-token prompt and returning to it
+restored 3,224 tokens. A follow-up to an 11,056-token coding prompt restored
+11,249 tokens including the previous answer and processed 27 new tokens.
+With the default of zero, the active conversation still reuses its prefix.
+Run `python native/windows/smoke-http.py --switch-chat`
+to check tool-call streaming and prefix restoration across conversations.
 
 The N1X build packages the pinned llama.cpp HTTP runtime as
 `ds4-gguf-server.exe`. Run `python native/windows/smoke-http.py` against a

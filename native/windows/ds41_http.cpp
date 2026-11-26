@@ -20,18 +20,27 @@ int main(int argc, char **argv) {
     // a separate llama-server with its own tools or MCP configuration.
     for (const char *setting : {"LLAMA_ARG_TOOLS", "LLAMA_ARG_MCP_SERVERS_CONFIG", "LLAMA_ARG_MCP_SERVERS_JSON"})
         _putenv_s(setting, "");
+    const bool cuda = std::string(argv[2]) == "cuda";
+    // Wider CUDA batches let more prompt tokens share each expert-weight upload.
     std::vector<std::string> options = {
         argv[0], "-m", argv[1], "--host", "127.0.0.1", "--port", argv[4],
         "--alias", "DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS",
-        "-c", argv[3], "-np", "1", "-t", "12", "-b", "1024", "-ub", "512",
+        "-c", argv[3], "-np", "1", "-t", "12", "-b", cuda ? "2048" : "1024", "-ub", cuda ? "2048" : "512",
         "--fit", "off", "--no-host", "--no-repack", "--load-mode", "mmap", "--lazy-mode", "on",
-        "--cache-prompt", "--cache-ram", "0", "--no-cache-idle-slots", "--ctx-checkpoints", "4", "--checkpoint-min-step", "512",
+        "--cache-prompt", "--no-cache-idle-slots", "--ctx-checkpoints", "4", "--checkpoint-min-step", "512",
         "--jinja", "--reasoning", "off", "--no-warmup", "--offline", "--no-ui",
         "--cors-origins", "localhost", "--timeout", "3600",
     };
-    if (std::string(argv[2]) == "cuda") {
+    if (!GetEnvironmentVariableA("LLAMA_ARG_CACHE_RAM", nullptr, 0)) {
+        options.insert(options.end(), {"--cache-ram", "0"});
+    }
+    if (cuda) {
+        char io[2]{};
+        const DWORD length = GetEnvironmentVariableA("DS4_N1X_DIRECT_EXPERT_IO", io, sizeof(io));
+        const bool direct = length != 1 || io[0] != '0';
+        if (length == 0) _putenv_s("DS4_N1X_DIRECT_EXPERT_IO", "1");
         if (!GetEnvironmentVariableA("DS4_N1X_PREFETCH_EXPERTS", nullptr, 0))
-            _putenv_s("DS4_N1X_PREFETCH_EXPERTS", "1");
+            _putenv_s("DS4_N1X_PREFETCH_EXPERTS", direct ? "0" : "1");
         llama_backend_init();
         auto dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
         if (!dev) dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
@@ -41,9 +50,14 @@ int main(int argc, char **argv) {
         constexpr size_t GiB = size_t(1) << 30;
         // Leave room for the dense weights and CUDA workspaces before sizing the expert cache.
         if (avail <= 10 * GiB) { fprintf(stderr, "Insufficient free CUDA memory\n"); return 1; }
-        auto mib = (avail - 8 * GiB) / (2 << 20);
-        options.insert(options.end(), {"-ngl", "all", "-ot", "ffn_.*_exps\\.weight=CPU,per_layer_token_embd\\.weight=CPU",
-                                        "--moe-cache-mib", std::to_string(mib)});
+        const char * placement = GetEnvironmentVariableA("LLAMA_ARG_N_CPU_MOE", nullptr, 0)
+            ? "per_layer_token_embd\\.weight=CPU"
+            : "ffn_.*_exps\\.weight=CPU,per_layer_token_embd\\.weight=CPU";
+        options.insert(options.end(), {"-ngl", "all", "-ot", placement});
+        if (!GetEnvironmentVariableA("LLAMA_ARG_MOE_CACHE_MIB", nullptr, 0)) {
+            auto mib = (avail - 8 * GiB) / (2 << 20);
+            options.insert(options.end(), {"--moe-cache-mib", std::to_string(mib)});
+        }
     } else {
         options.insert(options.end(), {"--device", "none", "-ngl", "0"});
     }
