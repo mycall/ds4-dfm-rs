@@ -3,6 +3,7 @@
 #include <ggml-backend.h>
 #include <llama.h>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
@@ -13,6 +14,19 @@ int main(int argc, char **argv) {
     if (argc != 5 || (std::string(argv[2]) != "cuda" && std::string(argv[2]) != "cpu")) {
         fprintf(stderr, "usage: ds4-gguf-server MODEL cuda|cpu CONTEXT PORT\n");
         return 2;
+    }
+    if (const char *policy = std::getenv("DS4_N1X_SEED_EXPERTS")) {
+        if (std::strcmp(policy, "0") && std::strcmp(policy, "1") && std::strcmp(policy, "equal") &&
+            std::strcmp(policy, "learned") && std::strcmp(policy, "two-stage")) {
+            fprintf(stderr, "DS4_N1X_SEED_EXPERTS accepts 0, 1, equal, learned or two-stage\n");
+            return 2;
+        }
+    }
+    if (const char *policy = std::getenv("DS4_N1X_KV_POLICY")) {
+        if (std::strcmp(policy, "oldest") && std::strcmp(policy, "adaptive")) {
+            fprintf(stderr, "DS4_N1X_KV_POLICY accepts oldest or adaptive\n");
+            return 2;
+        }
     }
     n1x_working_set working_set;
     if (!working_set.apply()) return 1;

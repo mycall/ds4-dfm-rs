@@ -1,0 +1,315 @@
+--- a/src/llama-moe-cache.cpp
++++ b/src/llama-moe-cache.cpp
+@@ -1,6 +1,7 @@
+ #include "llama-moe-cache.h"
+
+ #include "ds41_expert_upload.hpp"
++#include "ds41_cache_policy.hpp"
+ #include "llama-graph.h"
+ #include "llama-impl.h"
+ #include "llama-mmap.h"
+@@ -353,6 +354,8 @@
+         ggml_tensor * cpu_map  = nullptr;   // I32 [1, n_expert] in host memory, if cpu_share > 0
+         std::vector<int32_t> cpu_experts;   // experts set in cpu_map
+         bool prompt_seeded = false;
++        bool early_seeded = false;
++        int32_t seed_quota = 0;
+         uint32_t cpu_acc = 0;               // fraction of a miss carried over to the next plan, in 1/65536
+         std::vector<ggml_tensor *> experts; // host expert tensors, in the order of the banks
+     };
+@@ -388,6 +391,9 @@
+     std::vector<int32_t> ids;
+     std::vector<moe_cache_lru::fill> fills;
+     std::vector<moe_cache_lru::fill> cpu;
++
++    bool seed_enabled = false;
++    bool seed_early = false;
+
+     float    cpu_share = 0.0f;
+     uint32_t cpu_share_q = 0; // cpu_share in 1/65536, integer so that a simulator can reproduce the rounding
+@@ -620,6 +626,32 @@
+             }
+         }
+
++        const char * policy = std::getenv("DS4_N1X_SEED_EXPERTS");
++        seed_enabled = policy && std::strcmp(policy, "0") != 0;
++        if (seed_enabled) {
++            bool trained = std::strcmp(policy, "equal") != 0 &&
++                    model.arch == LLM_ARCH_DEEPSEEK41 && model.hparams.n_expert == 384 &&
++                    n_expert_used == 6 && layers.size() == 40 && groups.size() == 7 && cpu_share == 0.0f;
++            for (size_t il = 0; trained && il < layers.size(); ++il) {
++                auto & l = layers[il];
++                if (l.ig < 0) {
++                    trained = false;
++                    break;
++                }
++                const auto & g = groups[l.ig];
++                size_t stride = 0;
++                for (const auto * w : l.experts) stride += w->nb[2];
++                l.seed_quota = n1x_seed_quota(il, g.n_slots, g.layers.size(), stride);
++                trained = l.seed_quota > 0;
++            }
++            if (!trained) {
++                for (auto & l : layers) l.seed_quota = 0;
++            }
++            seed_early = trained && std::strcmp(policy, "two-stage") == 0;
++            LLAMA_LOG_INFO("%s: N1X expert seed policy: %s\n", __func__,
++                    seed_early ? "two-stage" : (trained ? "learned" : "equal"));
++        }
++
+         // as weights, the ops that read the banks run on the device and the slot maps are copied with the copy callback
+         for (device & d : devices) {
+             if (d.buf) {
+@@ -926,11 +958,8 @@
+
+ void llama_moe_cache::seed_from_routes(ggml_backend_t backend, const ggml_tensor * w,
+         const ggml_tensor * routes, const int32_t * ids) {
+-    static const bool enabled = [] {
+-        const char * setting = std::getenv("DS4_N1X_SEED_EXPERTS");
+-        return setting && std::strcmp(setting, "0") != 0;
+-    }();
+-    if (!enabled) {
++    const bool early = routes->ne[1] < 128;
++    if (!pimpl->seed_enabled || (early && !pimpl->seed_early)) {
+         return;
+     }
+     const auto it = pimpl->bindings.find(w);
+@@ -940,10 +969,11 @@
+     const int32_t il = it->second.il;
+     auto & layer = pimpl->layers[il];
+     auto & group = pimpl->groups[layer.ig];
+-    if (layer.prompt_seeded || backend != pimpl->devices[group.id].backend) {
++    if (layer.prompt_seeded || (early && layer.early_seeded) || backend != pimpl->devices[group.id].backend) {
+         return;
+     }
+-    layer.prompt_seeded = true;
++    if (early) layer.early_seeded = true;
++    else layer.prompt_seeded = true;
+
+     // Keep existing entries. Shared banks leave each layer its share of empty slots.
+     auto & lru = group.lru;
+@@ -952,7 +982,7 @@
+         return;
+     }
+     const int32_t resident = std::count_if(slots, slots + lru.n_expert, [&](int32_t s) { return s < group.n_slots; });
+-    const int32_t quota = group.n_slots / (int32_t) group.layers.size();
++    const int32_t quota = layer.seed_quota ? layer.seed_quota : group.n_slots / (int32_t) group.layers.size();
+     const int32_t vacant = std::min(quota - resident, group.n_slots - lru.n_filled);
+     if (vacant <= 0) {
+         return;
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -3179,7 +3179,7 @@
+         ggml_backend_tensor_get_async(backend, ids, st.ids_data.data(), 0, ggml_nbytes(ids));
+         ggml_backend_synchronize(backend);
+
+-        if (lctx->moe_cache && ids->ne[1] >= 128) {
++        if (lctx->moe_cache && ids->ne[1] >= 33) {
+             lctx->moe_cache->seed_from_routes(backend, src, ids, st.ids_data.data());
+         }
+         st.used.assign(n_expert, false);
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -70,7 +70,7 @@
+ target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
+
+ find_package(Threads REQUIRED)
+-target_link_libraries(llama PUBLIC ggml PRIVATE Threads::Threads)
++target_link_libraries(llama PUBLIC ggml PRIVATE Threads::Threads "${DS4_N1X_POLICY_LIB}")
+
+ if (BUILD_SHARED_LIBS)
+     set_target_properties(llama PROPERTIES POSITION_INDEPENDENT_CODE ON)
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -38,7 +38,7 @@
+ target_include_directories(${TARGET} PRIVATE ../mtmd)
+ target_include_directories(${TARGET} PRIVATE ${PROJECT_SOURCE_DIR})
+ target_link_libraries(${TARGET} PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT})
+-target_link_libraries(${TARGET} PRIVATE vendor::hash)
++target_link_libraries(${TARGET} PRIVATE vendor::hash "${DS4_N1X_POLICY_LIB}")
+
+ # llama-server-impl: server logic, reusable by app
+
+--- a/tools/server/server-slot-sched.h
++++ b/tools/server/server-slot-sched.h
+@@ -2,6 +2,10 @@
+
+ #include "server-common.h"
+ #include "server-task.h"
++#include "../../src/ds41_cache_policy.hpp"
++
++#include <cstdlib>
++#include <cstring>
+
+ #include <list>
+ #include <memory>
+@@ -28,7 +32,10 @@
+     // TODO: slot files do not store it
+     std::vector<common_adapter_lora_info> lora;
+
++    n1x_snapshot_class cache_class = n1x_snapshot_class::recent; // promoted after a successful RAM restore or ghost hit
++
+     void clear() {
++        cache_class = n1x_snapshot_class::recent;
+         tokens.clear();
+         checkpoints.clear();
+     }
+@@ -42,6 +49,7 @@
+             tokens.clone(),
+             checkpoints,
+             lora,
++            cache_class,
+         };
+     }
+
+@@ -81,6 +89,10 @@
+     server_prompt_cache(int32_t limit_size_mib, size_t limit_tokens) {
+         this->limit_size   = 1024ull*1024ull*(limit_size_mib < 0 ? 0 : limit_size_mib);
+         this->limit_tokens = limit_tokens;
++        const char * policy = std::getenv("DS4_N1X_KV_POLICY");
++        if (limit_size && (!policy || std::strcmp(policy, "adaptive") == 0)) {
++            history.reset(n1x_history_new());
++        }
+     }
+
+     std::list<server_prompt_cache_state> states;
+@@ -91,6 +103,9 @@
+     // in tokens, 0 = no limit
+     size_t limit_tokens = 0;
+
++    std::unique_ptr<n1x_snapshot_history, decltype(&n1x_history_free)> history{nullptr, n1x_history_free};
++
++    void evict();
+     size_t size() const;
+
+     size_t n_tokens() const;
+--- a/tools/server/server-slot-sched.cpp
++++ b/tools/server/server-slot-sched.cpp
+@@ -1,6 +1,9 @@
+ #include "server-slot-sched.h"
+
+ #include "common.h"
++#include "hash/hash.h"
++
++#include <optional>
+ #include "llama.h"
+ #include "log.h"
+
+@@ -81,6 +84,45 @@
+     return res;
+ }
+
++// Digest only the tail after the last cached SHA-256 block. Ghosts contain
++// no token text, payload, media or adapter references. They guide eviction
++// only; the original prefix/LoRA checks still authorize every restore.
++static std::optional<server_tokens::prefix_hash> snapshot_key(const server_tokens & tokens,
++        const std::vector<common_adapter_lora_info> & lora) {
++    if (tokens.empty() || tokens.has_mtmd || !lora.empty()) return std::nullopt;
++    const auto & blocks = tokens.get_prefix_hashes();
++    const size_t done = blocks.size() * server_tokens::hash_block_size;
++    if (done > tokens.size() || tokens.size() - done >= server_tokens::hash_block_size) return std::nullopt;
++    server_tokens::prefix_hash prev{};
++    if (!blocks.empty()) prev = blocks.back();
++    std::array<uint8_t, sizeof(prev) + server_tokens::hash_block_size*sizeof(llama_token)> data;
++    const size_t tail = (tokens.size() - done)*sizeof(llama_token);
++    std::memcpy(data.data(), prev.data(), prev.size());
++    if (tail) std::memcpy(data.data() + prev.size(), tokens.get_tokens().data() + done, tail);
++    return hash_sha256(data.data(), prev.size() + tail);
++}
++
++void server_prompt_cache::evict() {
++    auto victim = states.begin();
++    if (history) {
++        size_t recent_bytes = 0;
++        for (const auto & state : states) {
++            if (state.prompt.cache_class == n1x_snapshot_class::recent) recent_bytes += state.size();
++        }
++        const auto cls = n1x_victim_class(history.get(), recent_bytes, limit_size);
++        const auto it = std::find_if(states.begin(), states.end(), [cls](const auto & s) {
++            return s.prompt.cache_class == cls;
++        });
++        if (it != states.end()) victim = it;
++        if (const auto key = snapshot_key(victim->prompt.tokens, victim->prompt.lora)) {
++            n1x_record_eviction(history.get(), key->data(), victim->size(), victim->prompt.cache_class, limit_size);
++        }
++    }
++    SRV_TRC(" - evicting %s snapshot (%.3f MiB)\n", victim->prompt.cache_class == n1x_snapshot_class::frequent ? "frequent" : "recent",
++            victim->size() / (1024.0 * 1024.0));
++    states.erase(victim);
++}
++
+ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft) {
+     // first check if the current state is contained fully in the cache
+     for (auto it = states.begin(); it != states.end(); ++it) {
+@@ -107,6 +149,7 @@
+         return nullptr;
+     }
+
++    auto cache_class = prompt.cache_class;
+     // remove any cached prompts that are fully contained in the current prompt
+     for (auto it = states.begin(); it != states.end();) {
+         const int len = it->prompt.tokens.get_common_prefix(prompt.tokens);
+@@ -114,6 +157,7 @@
+         if (len == (int) it->prompt.tokens.size() && are_lora_equal(it->prompt.lora, prompt.lora)) {
+             SRV_TRC(" - removing obsolete cached prompt with length %d\n", len);
+
++            if (it->prompt.cache_class == n1x_snapshot_class::frequent) cache_class = it->prompt.cache_class;
+             it = states.erase(it);
+         } else {
+             ++it;
+@@ -123,10 +167,7 @@
+     if (limit_size > 0) {
+         // make room before allocating the new vectors to avoid breaching the limit
+         while (!states.empty() && size() + state_size_new > limit_size) {
+-            SRV_WRN(" - making room for prompt cache entry, removing oldest entry (size = %.3f MiB)\n",
+-                    states.front().size() / (1024.0 * 1024.0));
+-
+-            states.pop_front();
++            evict();
+         }
+     }
+
+@@ -154,6 +195,7 @@
+             /*.tokens      =*/ prompt.tokens.clone(),
+             /*.checkpoints =*/ prompt.checkpoints,
+             /*.lora        =*/ prompt.lora,
++            /*.cache_class =*/ cache_class,
+         },
+         /*.data   =*/ {
+             /*.main =*/ std::move(state_data_tgt),
+@@ -267,8 +309,13 @@
+         prompt = std::move(it_best->prompt);
+
+         states.erase(it_best);
++        prompt.cache_class = history ? n1x_snapshot_class::frequent : n1x_snapshot_class::recent;
+
+         SRV_TRC("slot %d: prompt cache restore took %.2f ms\n", id_slot, (ggml_time_us() - t_start) / 1000.0);
++    } else if (history) {
++        const auto key = snapshot_key(tokens_new, lora_new);
++        prompt.cache_class = key && n1x_revisit(history.get(), key->data(), limit_size)
++                ? n1x_snapshot_class::frequent : n1x_snapshot_class::recent;
+     }
+
+     return true;
+@@ -277,9 +324,7 @@
+ void server_prompt_cache::update() {
+     if (limit_size > 0) {
+         while (!states.empty() && size() > limit_size) {
+-            SRV_WRN(" - cache size limit reached, removing oldest entry (size = %.3f MiB)\n", states.front().size() / (1024.0 * 1024.0));
+-
+-            states.pop_front();
++            evict();
+         }
+     }
+
+@@ -291,9 +336,6 @@
+
+     if (limit_tokens > 0) {
+         while (!states.empty() && n_tokens() > limit_tokens_cur) {
+-            SRV_WRN(" - cache token limit (%zu, est: %zu) reached, removing oldest entry (size = %.3f MiB)\n",
+-                    limit_tokens, limit_tokens_cur, states.front().size() / (1024.0 * 1024.0));
+-
+-            states.pop_front();
++            evict();
+         }
+     }

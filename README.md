@@ -148,15 +148,23 @@ start the server from the same PowerShell session.
 ```powershell
 $env:LLAMA_ARG_N_CPU_MOE = '40'
 $env:LLAMA_ARG_MOE_CACHE_MIB = '75264'
-$env:DS4_N1X_SEED_EXPERTS = '1'
+$env:DS4_N1X_SEED_EXPERTS = 'learned'
 $env:LLAMA_ARG_CACHE_RAM = '512'
 $env:LLAMA_ARG_SPEC_DRAFT_MODEL = Join-Path $HOME 'models/deepseek-ai/DeepSeek-V4.1-Flash-1017/experimental/DeepSeek-V4.1-Flash-1017-DSpark-IQ2_XXS-imx-dflash.gguf'
 $env:LLAMA_ARG_SPEC_DRAFT_N_MAX = '5'
 .\ds4-n1x.ps1 start
 ```
 
-Seeding fills vacant slots using the first prompt batch of at least 128
-tokens and keeps each layer within its share of the cache. On two fresh starts
+On this 40-layer, 384-expert configuration, `learned` (also `1`) uses per-layer
+quotas fitted to coding requests. The first batch of at least 128 tokens
+seeds vacant slots. `two-stage` also seeds from one earlier batch of 33–127
+tokens, then fills the remaining quota on the first wide batch. Both use the
+existing GPU cache allocation and resume its usual replacement policy after
+seeding. Other cache geometries use equal quotas and wide-batch seeding.
+Select `equal` to force that baseline, or `0` to disable seeding. An unset
+variable leaves seeding disabled.
+
+On two earlier fresh starts with equal quotas
 using [Delta's coding fixture](https://github.com/mycall/delta-inference-engine/blob/5f9a130da793733d38a5c989d35f4d2e09d2a1a6/tools/v41/bench_allocation.py),
 the 260-token loop took 11.43–11.52 s and the 6,856-token sort took
 41.03–41.96 s. Peak GPU usage sampled during
@@ -171,6 +179,13 @@ With 512 MiB, switching away from a 3,228-token prompt and returning to it
 restored 3,224 tokens. A follow-up to an 11,056-token coding prompt restored
 11,249 tokens including the previous answer and processed 27 new tokens.
 With the default of zero, the active conversation still reuses its prefix.
+With a positive RAM budget, `DS4_N1X_KV_POLICY=adaptive` is the default.
+The cache favors snapshots that restore successfully and adjusts eviction
+when an evicted text history returns. Select `oldest` for oldest-saved
+eviction. Both policies use the same prefix and adapter checks on restore.
+See the [N1X cache measurements](docs/benchmarks/n1x-cache-policies.md) for
+the tested budgets, expert read volumes and workload tradeoffs.
+
 Run `python native/windows/smoke-http.py --switch-chat`
 to check tool-call streaming and prefix restoration across conversations.
 

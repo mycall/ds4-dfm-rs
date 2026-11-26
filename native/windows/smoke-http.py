@@ -12,13 +12,41 @@ def complete(body):
     return urllib.request.urlopen(request, timeout=1200)
 
 
+def snapshot_prompts():
+    # Distinct token histories with one shared BOS and lengths 32 through 72.
+    return {key: [0] + list(range(1000 + i * 100, 1031 + i * 100 + 8 * i))
+            for i, key in enumerate("ABCDEF")}
+
+
+def check_snapshot_restores(model, expected):
+    prompts = snapshot_prompts()
+    restored = cached = 0
+    for key in "ABACADAEBFAECA":
+        payload = dict(model=model, prompt=prompts[key], temperature=0, max_tokens=1, seed=7)
+        req = urllib.request.Request(BASE + "/completions", json.dumps(payload).encode(),
+                                     {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=1200) as response:
+            reply = json.load(response)
+        reused = reply["timings"]["cache_n"]
+        restored += reused > 1
+        cached += reused
+    assert restored == expected, (restored, expected, cached)
+    print(f"Restored {restored} snapshots across 14 requests and reused {cached} tokens.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--switch-chat", action="store_true",
+    checks = parser.add_mutually_exclusive_group()
+    checks.add_argument("--switch-chat", action="store_true",
                         help="check RAM prompt restoration across an unrelated chat")
+    checks.add_argument("--expect-snapshot-restores", type=int, metavar="COUNT",
+                        help="run the 14-request eviction trace against a freshly started server")
     args = parser.parse_args()
     with urllib.request.urlopen(BASE + "/models", timeout=5) as response:
         model = json.load(response)["data"][0]["id"]
+    if args.expect_snapshot_restores is not None:
+        check_snapshot_restores(model, args.expect_snapshot_restores)
+        return
     messages = [{"role": "user", "content": "Call lookup with key abc. Then reply with just the value it returns."}]
     tools = [{"type": "function", "function": {"name": "lookup", "description": "Look up a key",
               "parameters": {"type": "object", "properties": {"key": {"type": "string"}}, "required": ["key"]}}}]
