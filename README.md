@@ -196,6 +196,11 @@ counts. The original Rust server and bench hosts keep their model loaders. Passi
 `-UnslothModel <first-shard.gguf>` to the build also checks a real expert on CUDA
 and runs the arithmetic smoke test with a 3 GiB Windows memory reserve.
 
+The build updates its llama.cpp checkout automatically. To apply just the
+N1X source patches, run `.\native\windows\update-llama-source.ps1 -Src target/n1x/llama-src`.
+Run `python native/windows/test_llama_upgrade.py target/n1x/llama-src` to
+exercise upgrades and conflicting edits in a disposable checkout.
+
 ### Build
 
 The repository pins Rust 1.100.0, `rustfmt` and `clippy` in

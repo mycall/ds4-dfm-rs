@@ -1,53 +1,8 @@
 # Called by build.ps1 inside its native ARM64 VS environment.
 param([Parameter(Mandatory)][string]$Out, [switch]$CpuOnly, [switch]$Smoke)
 $ErrorActionPreference = 'Stop'
-$pin = '244640b7f26e2a7301b27a24edc4f7feaf97d52f'
 $src = Join-Path $Out 'llama-src'
-if (!(Test-Path "$src/.git")) {
-    Invoke-Checked git @('init', $src)
-    Invoke-Checked git @('-C', $src, 'fetch', '--depth=1', 'https://github.com/ggml-org/llama.cpp.git', $pin)
-    Invoke-Checked git @('-C', $src, '-c', 'core.longpaths=true', 'checkout', '--detach', 'FETCH_HEAD')
-}
-if ((& git -C $src rev-parse HEAD) -ne $pin) { throw "Expected llama.cpp $pin in $src" }
-$patches = @('ds41-demand-map.patch', 'ds41-http.patch', 'ds41-wide-prefetch.patch',
-             'ds41-seed-experts.patch', 'ds41-expert-io.patch', 'ds41-cache-policies.patch') |
-    ForEach-Object { Join-Path $PSScriptRoot $_ }
-# A later patch can change lines added by an earlier one. Compare the checkout
-# to the known prefixes of the patch stack without touching the developer's index.
-$paths = @($patches | ForEach-Object {
-    git -C $src apply --numstat $_ | ForEach-Object { ($_ -split "`t", 3)[2] }
-} | Sort-Object -Unique)
-$previousIndex = $env:GIT_INDEX_FILE
-$tempIndex = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
-$normalized = "$tempIndex.patch"
-$matched = $false
-try {
-    $env:GIT_INDEX_FILE = $tempIndex
-    Invoke-Checked git @('-C', $src, 'read-tree', $pin)
-    for ($i = 0; $i -le $patches.Count; $i++) {
-        if (!$matched) {
-            git -C $src diff --quiet -- $paths
-            if ($LASTEXITCODE -gt 1) { throw 'Could not compare the llama.cpp checkout' }
-            $matched = $LASTEXITCODE -eq 0
-        }
-        if ($i -eq $patches.Count) { break }
-        $patchText = [IO.File]::ReadAllText($patches[$i]).Replace("`r`n", "`n")
-        [IO.File]::WriteAllText($normalized, $patchText)
-        if ($matched) {
-            Invoke-Checked git @('-C', $src, 'apply', $normalized)
-        } else {
-            Invoke-Checked git @('-C', $src, 'apply', '--cached', $normalized)
-        }
-    }
-    if (!$matched) { throw "Unrecognized changes in the patched llama.cpp files in $src" }
-} finally {
-    $env:GIT_INDEX_FILE = $previousIndex
-    [IO.File]::Delete($tempIndex)
-    [IO.File]::Delete($normalized)
-}
-Copy-Item -LiteralPath "$PSScriptRoot/ds41_cache_policy.hpp" -Destination "$src/src/ds41_cache_policy.hpp" -Force
-Copy-Item -LiteralPath "$PSScriptRoot/ds41_expert_upload.hpp" -Destination "$src/src/ds41_expert_upload.hpp" -Force
-Copy-Item -LiteralPath "$PSScriptRoot/ds41_expert_read.hpp" -Destination "$src/src/ds41_expert_read.hpp" -Force
+& "$PSScriptRoot/update-llama-source.ps1" -Src $src
 $cuda = if ($CpuOnly) { 'OFF' } else { 'ON' }
 $build = Join-Path $Out $(if ($CpuOnly) { 'llama-build' } else { 'llama-cuda' })
 $llvm = Join-Path $env:VCINSTALLDIR 'Tools/Llvm/ARM64/bin'
