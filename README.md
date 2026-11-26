@@ -122,7 +122,7 @@ opencode run -m ds4-drm-rs/DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS "Say hell
 ```
 
 `start` waits for readiness at `http://127.0.0.1:8081/health`. Its default is
-one 32,768-token slot. Override with `-Context`, `-Model` or `-Backend cpu`.
+one 1,048,576-token slot. Override with `-Context`, `-Model` or `-Backend cpu`.
 For OpenCode, set the provider base URL to `http://127.0.0.1:8081/v1`, enable
 text and tools, and match the configured context to the server. The wire model ID
 is `DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS`. Streaming chat completions

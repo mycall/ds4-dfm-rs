@@ -28,7 +28,7 @@ switch ($Action) {
     'help' {
         @'
 .\ds4-n1x.ps1 status                       Show executable, first shard, and active CLI processes
-.\ds4-n1x.ps1 start                        Serve the model on localhost:8081 (default context 32768)
+.\ds4-n1x.ps1 start                        Serve the model on localhost:8081 (default context 1048576)
 .\ds4-n1x.ps1 stop                         Release the resident model and GPU cache
 .\ds4-n1x.ps1 build                        Build the native hosts and run model-free smoke checks
 .\ds4-n1x.ps1 test                         Test the resident HTTP server, or the CLI when stopped
@@ -79,7 +79,7 @@ Run also accepts -MaxTokens (default 64) and -Context (default 512).
         if ($network.GetActiveTcpListeners().Port -contains 8081) {
             throw 'Port 8081 is in use.'
         }
-        if (!$PSBoundParameters.ContainsKey('Context')) { $Context = 32768 }
+        if (!$PSBoundParameters.ContainsKey('Context')) { $Context = 1048576 }
         $launch = @{
             FilePath = $server
             ArgumentList = @(('"{0}"' -f $shard), $Backend, $Context, 8081)

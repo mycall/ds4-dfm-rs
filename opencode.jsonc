@@ -1,0 +1,4 @@
+{
+  // On the 1,048,576-token N1X server, compact at 200,000 tokens.
+  "compaction": { "buffer": 848576 }
+}
