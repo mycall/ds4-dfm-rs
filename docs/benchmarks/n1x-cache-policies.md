@@ -39,3 +39,24 @@ python native/windows/smoke-http.py --expect-snapshot-restores 3
 # 512 MiB, either policy
 python native/windows/smoke-http.py --expect-snapshot-restores 8
 ```
+
+## ARM64 host measurements
+
+Windows exposed NEON, dot product, I8MM, BF16, SVE and SVE2 on this N1X. An SVE loop measured a 16-byte vector length. Windows reported SME and SME2 unavailable. The release already builds the quantized CPU backend with `-mcpu=native`. [Windows processor feature detection](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocessorfeaturepresent)
+
+Timers on the host thread attributed 57.80 s to finishing outstanding expert reads and 9.02 s to resolving and submitting those reads in a 103.00 s allocation suite. CPU top-k sampling took 8.48 ms across the same six requests. Eliminating that entire sampling step would have saved at most 0.0083% of the measured wall time.
+
+An experimental filter used the first 512 candidates to derive a lower bound for the 40th-largest logit. It retained every later candidate that could enter the heap. On 16 captured 129,280-entry vocabularies, the existing partial sort took a median 46.29 µs per vocabulary, the NEON filter 32.11 µs and the SVE gather filter 48.02 µs. When large logits appeared only after the initial prefix, the NEON median rose to 283.01 µs against 93.17 µs for the existing implementation.
+
+Four fresh CUDA servers ran the 260-token coding loop in baseline / NEON / NEON / baseline order. The existing sampler spent 34.28–34.82 ms in top-k, and the NEON candidate spent 44.84–45.83 ms. All four returned the same completion and draft acceptance, with request times of 33.87–33.97 s. The release keeps the existing sampler.
+
+The CPU-only control rebuilt all 17 objects in the ggml CPU backend for Armv8-A with NEON. The rest of the runtime used its deployed flags. A first attempt with 32 prompt tokens hit the five-minute watchdog. The completed test used four fixed prompt tokens followed by one teacher-forced decode step, 12 threads and two fresh processes per build. The deployed runs preceded the coherent Armv8-A runs. Each pair repeated its two top-token IDs.
+
+| CPU backend | Four-token prefill, seconds | One decode step, seconds | Top token at each position |
+|---|---:|---:|---|
+| Deployed native | 53.39–60.66 | 50.16–54.85 | 36651, 2105 |
+| Armv8-A NEON | 59.32–61.81 | 58.99–64.33 | 11, 2105 |
+
+The prefill top token changed between backends. Two prediction positions and sequential run order support only a narrow comparison. An earlier mixed build combined a two-row dispatcher with one-row quantized kernels and returned uniform logits. Its timings were excluded.
+
+A separate single-thread IQ2_XXS × Q8_K dot-product test used 2,304 synthetic weight rows of width 5,120. The harness pinned the thread to one logical CPU and warmed it for 800 ms before timing. Per-process median times were 1.463–1.583 ms for the native build and 1.703–1.845 ms for Armv8-A, with matching output checksums. This covers one quantization format and a hot weight buffer.
