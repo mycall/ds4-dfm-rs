@@ -4,7 +4,8 @@
 // rounding of it on scalar-baseline shapes. VQ experts, BF16 dots and DSA
 // absorption must reproduce their one-row kernels bit for bit per row.
 // Tensor-core Q4_K verify rows: exact products of BF16 inputs, so each token
-// stays within one BF16 ulp of an FP64 dot of the same weights.
+// stays within one BF16 ulp of an FP64 dot of the same weights, or, for
+// the whole-row path, within the staged kernel's error under cancellation.
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -118,7 +119,12 @@ static int q4m_case(uint32_t rows, uint32_t cols, uint32_t tokens) {
     CK(glmvq_q4m_decode(dw, dx, dy, rows, cols, tokens, 0, GLMVQ_LAUNCH_PLAIN));
     CK(cudaDeviceSynchronize());
     auto got = down(dy, (size_t)tokens * rows);
-    uint32_t differ = 0, beyond = 0;
+    std::vector<float> staged;
+    if (blocks > GLMVQ_Q4M_CHUNK && blocks <= GLMVQ_Q4M_ROW) {
+        CK(glmvq_q4m_decode(dw, dx, dy, rows, cols, tokens, 0, GLMVQ_LAUNCH_PLAIN, GLMVQ_Q4M_STAGED));
+        staged = down(dy, (size_t)tokens * rows);
+    }
+    uint32_t differ = 0, beyond = 0, failures = 0;
     for (uint32_t r = 0; r < rows; r++) {
         for (uint32_t t = 0; t < tokens; t++) {
             double ref = 0;
@@ -130,12 +136,23 @@ static int q4m_case(uint32_t rows, uint32_t cols, uint32_t tokens) {
             const float have = got[(size_t)t * rows + r];
             const float ulp = fmaxf(fabsf(want), 1e-30f) * 0x1p-7f;
             differ += have != want;
-            beyond += fabsf(have - want) > ulp;
+            if (!std::isfinite(have)) {
+                failures++;
+            } else if (fabsf(have - want) > ulp) {
+                // Near a cancelling dot, even the original staged reduction
+                // can cross the relative bound. Compare both to the FP64 dot.
+                beyond++;
+                const size_t i = (size_t)t * rows + r;
+                if (staged.empty() || !std::isfinite(staged[i]) || fabsf(staged[i] - want) <= ulp ||
+                    std::fabs(have - ref) > std::fabs(staged[i] - ref)) {
+                    failures++;
+                }
+            }
         }
     }
-    const bool ok = !beyond && differ * 50 <= rows * tokens;
-    printf("q4 mma %ux%u tokens=%u: %u differ by one ulp, %u beyond %s\n", rows, cols, tokens, differ, beyond,
-        ok ? "ok" : "FAIL");
+    const bool ok = !failures && differ * 50 <= rows * tokens;
+    printf("q4 mma %ux%u tokens=%u: %u differ, %u beyond one ulp, %u failed %s\n",
+        rows, cols, tokens, differ, beyond, failures, ok ? "ok" : "FAIL");
     cudaFree(dw); cudaFree(dx); cudaFree(dy);
     return !ok;
 }
@@ -531,6 +548,8 @@ int main(int argc, char **argv) {
     for (uint32_t tokens : {2u, 3u, 8u}) {
         failures += q4m_case(1024, 4096, tokens);   // KDA q/k/v rows
         failures += q4m_case(1000, 1536, tokens);   // q_b: partial last stage and row tile
+        failures += q4m_case(1024, 4608, tokens);   // Inkling 2: 18-block rows, one stage
+        failures += q4m_case(1000, 4352, tokens);   // 17 blocks: an idle warp and a row tail
     }
     for (uint32_t tokens : {1u, 3u, 8u}) {
         failures += q4m_swiglu_case(2048, 4096, tokens);   // shared expert
