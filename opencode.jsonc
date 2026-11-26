@@ -1,4 +1,13 @@
 {
-  // On the 1,048,576-token N1X server, compact at 200,000 tokens.
-  "compaction": { "buffer": 848576 }
+  "providers": {
+    "ds4-drm-rs": {
+      "models": {
+        "DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS": {
+          "limit": { "context": 250000, "output": 4096 }
+        }
+      }
+    }
+  },
+  // Leave 25,000 tokens for the next agent loop pass.
+  "compaction": { "buffer": 25000 }
 }

@@ -75,6 +75,10 @@ int main(int argc, char **argv) {
         const DWORD length = GetEnvironmentVariableA("DS4_N1X_DIRECT_EXPERT_IO", io, sizeof(io));
         const bool direct = length != 1 || io[0] != '0';
         if (length == 0) _putenv_s("DS4_N1X_DIRECT_EXPERT_IO", "1");
+        // Retain frequently routed experts across prompt microbatches in the existing GPU cache.
+        if (direct && !std::getenv("DS4_N1X_SEED_EXPERTS")) {
+            _putenv_s("DS4_N1X_SEED_EXPERTS", "equal");
+        }
         if (!GetEnvironmentVariableA("DS4_N1X_PREFETCH_EXPERTS", nullptr, 0))
             _putenv_s("DS4_N1X_PREFETCH_EXPERTS", direct ? "0" : "1");
         llama_backend_init();

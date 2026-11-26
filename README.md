@@ -122,17 +122,21 @@ opencode run -m ds4-drm-rs/DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS "Say hell
 ```
 
 `start` waits for readiness at `http://127.0.0.1:8081/health`. Its default is
-four slots with a requested context of 1,048,576 tokens each. Use `-MaxSeqs`
+four slots with a requested context of 250,000 tokens each. Use `-MaxSeqs`
 to change concurrency and `-Context` to change the per-slot capacity.
 The slots share model weights and each needs its own attention state.
+The repository OpenCode configuration targets compaction at 225,000 tokens.
+For the full model context, use `start -Context 1048576` and match the
+OpenCode model limit and compaction buffer to the desired threshold.
 For OpenCode, set the provider base URL to `http://127.0.0.1:8081/v1`, enable
 text and tools, and match the configured context to the server. The wire model ID
 is `DeepSeek-V4.1-Flash-1017-unsloth-UD-IQ2_XXS`. Streaming chat completions
 return OpenAI tool calls; the client executes them and sends back tool results.
 The resident graph retains its expert cache and reuses matching prompt tokens
-across turns. The CUDA HTTP host shares expert uploads across prompt microbatches
-of up to 2,048 tokens. The four-slot 1M default uses 512 rows to fit the
-prefill workspace. It can read two missing expert ranges from the GGUF shards concurrently
+across turns. Tokens in the same CUDA microbatch share expert uploads.
+The four-slot default processes up to 2,048 tokens per microbatch. Requesting
+1,048,576 tokens per slot uses 512 rows to fit the prefill workspace.
+The host can read two missing expert ranges from the GGUF shards concurrently
 using the same three pinned buffers (48 MiB total). Each buffer is reused after
 its GPU copy completes. Set `$env:DS4_N1X_EXPERT_READ_DEPTH = '1'` before
 starting the server to serialize disk reads. Unsupported or incomplete
@@ -164,8 +168,11 @@ seeds vacant slots. `two-stage` also seeds from one earlier batch of 33–127
 tokens, then fills the remaining quota on the first wide batch. Both use the
 existing GPU cache allocation and resume its usual replacement policy after
 seeding. Other cache geometries use equal quotas and wide-batch seeding.
-Select `equal` to force that baseline, or `0` to disable seeding. An unset
-variable leaves seeding disabled.
+The native N1X CUDA HTTP server defaults to `equal` with direct expert I/O.
+On the first batch of at least 128 tokens, each layer fills its share of
+vacant GPU slots with the experts most frequently selected in that batch.
+Later prompt batches can reuse those weights. Set `DS4_N1X_SEED_EXPERTS=0`
+to disable seeding. With mapped I/O, seeding remains opt-in.
 
 On two earlier fresh starts with equal quotas
 using [Delta's coding fixture](https://github.com/mycall/delta-inference-engine/blob/5f9a130da793733d38a5c989d35f4d2e09d2a1a6/tools/v41/bench_allocation.py),

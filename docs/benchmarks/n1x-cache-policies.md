@@ -53,6 +53,28 @@ On November 25, the four-slot Windows host based on `cdc6ba5b` used the same six
 
 All four follow-ups overlapped, preserved their own private words and processed 15 new prompt tokens each. Their times to first content ranged from 1.73 to 2.19 s. During the long prefill, two Windows samples on the model drive showed 2.53 and 3.16 GB/s of physical reads, 51% and 58% disk active time, and 2.60 and 3.01 GB/s of model-process reads, respectively. These are samples from one run. The integration test checks reuse, response isolation and overlap without machine-specific latency thresholds.
 
+## Read volume at the 250,000-token four-slot default
+
+On November 26, fresh N1X CUDA HTTP servers ran the same six-shard model with four 250,000-token slots, automatic expert-cache sizing, direct expert reads and no drafter. Each server processed the same 8,192-token repository excerpt from an empty prompt cache in 2,048-row microbatches and generated the same single token. Windows process read counters were sampled after readiness and after the response. The physical disk counters agreed with the process totals to within 0.02 GB. Units below are decimal.
+
+| Seed policy | Process read GB | MB per prompt token | Read operations | Server prefill | Prompt throughput |
+|---|---:|---:|---:|---:|---:|
+| Disabled | 478.04 | 58.35 | 48,970 | 103.96 s | 78.8 tok/s |
+| Equal, production default | 332.82 | 40.63 | 57,343 | 86.44 s | 94.8 tok/s |
+| Experimental rolling refresh | 330.78 | 40.38 | 58,105 | 86.72 s | 94.5 tok/s |
+
+Equal seeding saved 145.22 GB (30.4%) using the existing GPU allocation. A second, instrumented equal run read the same number of bytes and took 88.96 s. The rolling prototype updated per-expert routing counts after each wide microbatch, weighting the previous score by 0.75. It saved another 2.04 GB on this prompt but issued 762 more reads. At four 1M-token slots (512-row microbatches), rolling saved 7.4 GB and 21.2 GB on two successive repository excerpts, then increased reads on their cached-prefix generation request from 13.20 to 13.77 GB. Equal seeding remains the default.
+
+With four 1M-token slots, the 3,378-token excerpt alone read 654.67 GB with seeding disabled and 385.74 GB with equal seeding. A separate four-slot integration run at that capacity took 131.87 and 95.65 seconds respectively and returned the digit 4 in both cases.
+
+Replaying expert selection for 8,188 wide-batch tokens from the 8,192-token prompt estimated 40.55 MB/token at 2,048 rows, 26.26 at 4,096 and 17.45 at 8,192. The two larger widths are estimates of expert payload only. GPU memory fit and elapsed time at those widths remain unmeasured.
+
+To check the default on the local model, run the integration test with the server stopped. It launches a fresh server for each policy, sends the same multi-batch prompt, and checks the answer and the reduction in process read bytes.
+
+```powershell
+.\native\windows\test-prefill-reads.ps1 -Model $model
+```
+
 ## ARM64 host measurements
 
 Windows exposed NEON, dot product, I8MM, BF16, SVE and SVE2 on this N1X. An SVE loop measured a 16-byte vector length. Windows reported SME and SME2 unavailable. The release already builds the quantized CPU backend with `-mcpu=native`. [Windows processor feature detection](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocessorfeaturepresent)
