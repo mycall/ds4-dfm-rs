@@ -1,0 +1,119 @@
+--- a/src/llama-hparams.h
++++ b/src/llama-hparams.h
+@@ -374,12 +374,13 @@
+     float    dsv4_hc_eps               = 0.0f;
+     std::array<uint32_t, LLAMA_MAX_LAYERS> dsv4_compress_ratios;
+
+-    // The second visit gets its own logical layer and shares its first visit's tensors.
++    // Every repeat has its own logical layer and uses the first visit's tensors.
+     int32_t dsv41_repeat_at = 0;
+     int32_t dsv41_repeat_count = 0;
++    int32_t dsv41_extra_layers = 0;
+     int32_t dsv41_first_visit(int32_t il) const {
+-        return il >= dsv41_repeat_at && il < dsv41_repeat_at + dsv41_repeat_count
+-                ? il - dsv41_repeat_count : il;
++        return il >= dsv41_repeat_at && il < dsv41_repeat_at + dsv41_extra_layers
++                ? dsv41_repeat_at - dsv41_repeat_count + (il - dsv41_repeat_at) % dsv41_repeat_count : il;
+     }
+
+     // deepseek41
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1824,10 +1824,15 @@
+     const int n_gpu_layers = this->n_gpu_layers();
+
+     n1x_loop_window loop{};
++    int32_t extra_layers = 0;
+     if (arch == LLM_ARCH_DEEPSEEK41) {
+         loop = n1x_loop_range(hparams.n_layer());
+-        if (loop.count < 0 || n_layer_all + loop.count > LLAMA_MAX_LAYERS) {
++        if (loop.count < 0) {
+             throw std::runtime_error("DS4_N1X_LOOP_LAYERS needs an inclusive zero-based range inside the model");
++        }
++        extra_layers = n1x_loop_extra_layers(loop.count, LLAMA_MAX_LAYERS - n_layer_all);
++        if (extra_layers < 0) {
++            throw std::runtime_error("DS4_N1X_LOOP_REPEATS needs a nonnegative repeat count that fits the model with DS4_N1X_LOOP_LAYERS");
+         }
+     }
+
+@@ -2315,26 +2320,31 @@
+
+     // YoungAi 7fb26cc src/core/core_v41_forward.c:181,312 carries hc and
+     // pre_mix through the stack. The experimental deviation visits a block
+-    // twice at the same token positions, before cache/context allocation.
++    // again at the same token positions, before cache/context allocation.
+     const auto apply_layer_loop = [&]() {
+-        if (loop.count == 0) {
++        if (extra_layers == 0) {
+             return;
+         }
+         const auto old = hparams;
+         const int at = loop.first + loop.count;
+-        hparams.n_layer_all += loop.count;
++        hparams.n_layer_all += extra_layers;
+         hparams.dsv41_repeat_at = at;
+         hparams.dsv41_repeat_count = loop.count;
++        hparams.dsv41_extra_layers = extra_layers;
++        const auto checkpoint_layer = [&](int il) {
++            return il >= at + extra_layers ? il - extra_layers : hparams.dsv41_first_visit(il);
++        };
+         layers.resize(hparams.n_layer_all);
+         pimpl->dev_layer.resize(hparams.n_layer_all);
+         // Copy tensor handles and placements backwards to retain the source.
+         for (int il = hparams.n_layer_all - 1; il >= at; --il) {
+-            layers[il] = layers[il - loop.count];
+-            pimpl->dev_layer[il] = pimpl->dev_layer[il - loop.count];
+-        }
+-
+-        pimpl->dsv41_experts.resize(loop.count);
+-        for (int j = 0; j < loop.count; ++j) {
++            const int src = checkpoint_layer(il);
++            layers[il] = layers[src];
++            pimpl->dev_layer[il] = pimpl->dev_layer[src];
++        }
++
++        pimpl->dsv41_experts.resize(extra_layers);
++        for (int j = 0; j < extra_layers; ++j) {
+             auto & layer = layers[at + j];
+             auto & headers = pimpl->dsv41_experts[j];
+             int k = 0;
+@@ -2357,7 +2367,7 @@
+         }
+         std::array<int, LLAMA_MAX_LAYERS> latest{};
+         for (int il = 0; il < (int) hparams.n_layer_all; ++il) {
+-            const int src = il < at ? il : il - loop.count;
++            const int src = checkpoint_layer(il);
+             latest[src] = il;
+             const auto latest_visit = [&](int source) { return source < 0 ? -1 : latest[source]; };
+             // Raw KV belongs to this visit. Compressed KV and top-k come from
+@@ -2379,10 +2389,10 @@
+             hparams.is_ple_impl[il] = hparams.dsv41_first_visit(il) == il && old.is_ple_impl[src];
+         }
+         if (old.dsv41_cand_src >= at) {
+-            hparams.dsv41_cand_src += loop.count;
+-        }
+-        LLAMA_LOG_WARN("ds41: repeating GGUF layers %d-%d once (%u logical layers)\n",
+-                       loop.first, at - 1, hparams.n_layer());
++            hparams.dsv41_cand_src += extra_layers;
++        }
++        LLAMA_LOG_WARN("ds41: repeating GGUF layers %d-%d, %d extra passes (%u logical layers)\n",
++                       loop.first, at - 1, extra_layers / loop.count, hparams.n_layer());
+     };
+
+     if (ml.no_alloc) {
+--- a/src/llama-kv-cache-dsv4.cpp
++++ b/src/llama-kv-cache-dsv4.cpp
+@@ -24,6 +24,13 @@
+ // Baseline snapshots keep their original header. Looped snapshots bind both
+ // ends of the repeated block, even when two experiments have the same depth.
+ static uint32_t dsv4_state_version(const llama_hparams & hp) {
++    if (hp.dsv41_extra_layers > hp.dsv41_repeat_count) {
++        // Multi-repeat snapshots encode the end, width and added depth in ten bits each.
++        // The two low bits distinguish them from baseline and original single-repeat states.
++        static_assert(LLAMA_MAX_LAYERS < 1024);
++        return 2u | (uint32_t(hp.dsv41_repeat_at) << 2) | (uint32_t(hp.dsv41_repeat_count) << 12)
++                  | (uint32_t(hp.dsv41_extra_layers) << 22);
++    }
+     return DSV4_STATE_VERSION | (uint32_t(hp.dsv41_repeat_at) << 8) | (uint32_t(hp.dsv41_repeat_count) << 20);
+ }
+ static constexpr uint32_t DSV4_STATE_MODE_FULL     = 0;

@@ -18,6 +18,16 @@ extern "C" {
  * prefill / decode / KV / destroy.  Existing extras stay; do not mass-delete.
  * Policy: docs/rust-migration/FFI_CONTRACT.md */
 
+/* Single-row Varloop projection backend. Upload copies the source bytes.
+ * Each synchronous mv writes exactly rows FP32 values. */
+typedef struct ds4_varloop_device ds4_varloop_device;
+ds4_varloop_device *ds4_bridge_varloop_device(void);
+void ds4_bridge_varloop_close(ds4_varloop_device *device);
+void *ds4_bridge_varloop_upload(const uint8_t *data, size_t bytes);
+void ds4_bridge_varloop_free(void *weight);
+int ds4_bridge_varloop_mv(ds4_varloop_device *device, const void *weight, size_t first_row,
+                          uint32_t type, int width, int rows, const float *x, float *out);
+
 #if defined(_WIN32) && defined(_M_ARM64)
 #ifdef DS4_GGUF_BUILD
 #define DS4_GGUF_API __declspec(dllexport)

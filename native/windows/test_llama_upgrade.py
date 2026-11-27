@@ -8,6 +8,9 @@ import tempfile
 
 WINDOWS = Path(__file__).resolve().parent
 POLICY_PATCH = WINDOWS / "ds41-cache-policies.patch"
+LOOP_PATCH = WINDOWS / "ds41-layer-loop.patch"
+LOOP_CACHE_PATCH = WINDOWS / "ds41-loop-expert-cache.patch"
+LOOP_DEPTH_PATCH = WINDOWS / "ds41-loop-depth.patch"
 HEADERS = ("ds41_cache_policy.hpp", "ds41_expert_read.hpp", "ds41_expert_upload.hpp")
 
 
@@ -45,11 +48,22 @@ def check_upgrade(source, test, crlf):
 
     update()
     latest = snapshot(test)
+    git(test, "apply", "--reverse", "--check", LOOP_DEPTH_PATCH)
+    git(test, "apply", "--reverse", "--check", LOOP_CACHE_PATCH)
     git(test, "apply", "--reverse", "--check", POLICY_PATCH)
     for header in HEADERS:
         assert (test / "src" / header).read_bytes() == (WINDOWS / header).read_bytes()
 
+    # Upgrade a checkout already running the original layer repeat.
+    git(test, "apply", "--reverse", LOOP_DEPTH_PATCH)
+    git(test, "apply", "--reverse", LOOP_CACHE_PATCH)
+    update()
+    assert snapshot(test) == latest
+
     # Recreate the five-patch checkout produced before header receipts.
+    git(test, "apply", "--reverse", LOOP_DEPTH_PATCH)
+    git(test, "apply", "--reverse", LOOP_CACHE_PATCH)
+    git(test, "apply", "--reverse", LOOP_PATCH)
     git(test, "apply", "--reverse", POLICY_PATCH)
     (test / "src" / HEADERS[0]).unlink()
     receipt = test / ".git/ds4-n1x-headers"

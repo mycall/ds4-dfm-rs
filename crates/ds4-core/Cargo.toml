@@ -12,6 +12,7 @@ path = "src/lib.rs"
 # H3 device examples need the native objects linked by their Makefile targets.
 # Keep them out of the default host-only build.
 [features]
+varloop-cuda = []
 h3-gates = []
 
 [[example]]

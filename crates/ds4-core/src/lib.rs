@@ -75,6 +75,7 @@ pub mod v41_golden;
 pub mod v41_media;
 mod v41_run;
 mod validate;
+pub mod varloop;
 mod vit_image;
 mod vq;
 mod zchain;

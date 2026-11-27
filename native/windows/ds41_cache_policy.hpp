@@ -4,7 +4,10 @@
 
 enum class n1x_snapshot_class : uint8_t { recent, frequent };
 struct n1x_snapshot_history;
+struct n1x_loop_window { int32_t first, count; };
 extern "C" {
+n1x_loop_window n1x_loop_range(int32_t layers);
+int32_t n1x_loop_extra_layers(int32_t width, int32_t room);
 int32_t n1x_seed_quota(size_t layer, int32_t slots, size_t layers, size_t stride);
 n1x_snapshot_history * n1x_history_new();
 void n1x_history_free(n1x_snapshot_history *);

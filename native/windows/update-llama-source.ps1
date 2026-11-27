@@ -53,7 +53,8 @@ $records = foreach ($name in $headers) {
     "$name=$wanted"
 }
 $patches = @('ds41-demand-map.patch', 'ds41-http.patch', 'ds41-wide-prefetch.patch',
-             'ds41-seed-experts.patch', 'ds41-expert-io.patch', 'ds41-cache-policies.patch') |
+             'ds41-seed-experts.patch', 'ds41-expert-io.patch', 'ds41-cache-policies.patch',
+             'ds41-layer-loop.patch', 'ds41-loop-expert-cache.patch', 'ds41-loop-depth.patch') |
     ForEach-Object { Join-Path $PSScriptRoot $_ }
 # A later patch can change lines added by an earlier one. Compare the checkout
 # to the known prefixes of the patch stack without touching the developer's index.

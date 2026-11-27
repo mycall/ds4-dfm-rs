@@ -106,3 +106,40 @@ The CPU-only control rebuilt all 17 objects in the ggml CPU backend for Armv8-A 
 The prefill top token changed between backends. Two prediction positions and sequential run order support only a narrow comparison. An earlier mixed build combined a two-row dispatcher with one-row quantized kernels and returned uniform logits. Its timings were excluded.
 
 A separate single-thread IQ2_XXS × Q8_K dot-product test used 2,304 synthetic weight rows of width 5,120. The harness pinned the thread to one logical CPU and warmed it for 800 ms before timing. Per-process median times were 1.463–1.583 ms for the native build and 1.703–1.845 ms for Armv8-A, with matching output checksums. This covers one quantization format and a hot weight buffer.
+
+## Repeated DeepSeek layers and active context
+
+November 26, 2026, native Windows ARM64 N1X server on the 96 GiB device, using the six local DeepSeek-V4.1-Flash-1017 UD-IQ2_XXS shards, no drafter, a 64 GiB GPU expert cache and CPU boost enabled. The launcher allocated four slots of 250,112 tokens each. One slot was active. This checkout was based on `c87b76f5`. The depth and context runs used `llama.dll` SHA-256 `a3da631087364525f6f91a35f29a50b34afcf553009c44a12e90609019413a9c`.
+
+With layers 15–18 repeated once, two fresh starts per cache size generated the same 128-token answer. With separate entries for each visit, automatic sizing gave 7.38–7.42 tokens/s and 53.53 GiB of process reads. A 64 GiB cache gave 8.67–8.91 tokens/s and 38.34 GiB of reads. Peak sampled GPU usage rose from about 71 to 88 GiB. On an immediate repeat of a shorter prompt, both cache sizes decoded at about 19 tokens/s.
+
+At 64 GiB, two fresh starts per sharing setting generated that same 128-token answer at 8.77–8.91 tokens/s with separate entries and 9.37–9.67 tokens/s with shared entries. Sharing reduced process reads from 38.34 to 32.44 GiB.
+
+For the context comparison, each mode started a fresh server and processed the same tokenized repository text at successively longer frontiers. At each frontier a one-token request filled the KV cache. Resending the prompt evaluated the last four prompt tokens and generated 128 greedy tokens. All three pairs returned identical token IDs. SSD bytes are raw Windows PhysicalDisk counter deltas for the model's Samsung 990 PRO, including other reads on that drive.
+
+Windows Kernel-Power events identify source changes during a run. The context comparison uses a fresh run after reconnection. The depth sweep retains the original deeper runs and records their power conditions.
+
+Each pair below gives **separate → shared**. Prefill wall time covers the first request. The final two columns describe the 128-token request with the prompt already in KV.
+
+| Occupied tokens | Newly evaluated during fill | Prefill request wall (s) | Generation request SSD reads (GiB) | Decode (tok/s) |
+|---:|---:|---:|---:|---:|
+| 1,024 | 1,024 | 30.49 → 28.51 | 22.60 → 19.74 | 9.37 → 10.09 |
+| 8,192 | 8,192 | 84.09 → 74.59 | 9.71 → 8.17 | 12.29 → 13.13 |
+| 16,384 | 10,240 | 104.18 → 92.07 | 7.79 → 5.89 | 13.47 → 14.05 |
+
+At 16,384 tokens the fill reused 6,144 prompt tokens in both modes and read 321.36 and 281.63 GiB from the drive, respectively. An earlier shared run that included battery power also read 5.89 GiB on generation and decoded at 13.29 tokens/s. Each table cell is one measurement. Expert-cache history and generated text vary across frontiers.
+
+An AC control without a layer repeat used the same prompts, lengths, cache budget and request order. Decode reached 11.09, 13.56 and 15.38 tokens/s at the three frontiers. At 16,384 tokens the ordinary graph read 5.97 GiB for the 128-token request and completed it in 8.41 seconds. The shared loop read 5.89 GiB and took 9.23 seconds. Both produced 128 tokens, with different continuations and potentially different expert routes.
+
+### Extra passes over layers 15–18
+
+Each fresh server processed a 3,378-token prompt, two short generation requests, and a 46-token database question with a 128-token answer. Prompt reuse was disabled for these measurements. All depths then answered the same 12 four-choice ARC questions. For each question, the scorer calculated the negative log probability of the correct label among the four choices. Lower loss means a higher geometric mean probability for the correct answer.
+
+| Extra passes | Logical layers | Prefill (tok/s) | 128-token decode (tok/s) | Process reads for 128-token request (GiB) | ARC correct | Mean four-choice loss | Power |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 0 | 40 | 75.17 | 10.53 | 30.82 | 12/12 | 0.00004 | AC rerun |
+| 1 | 44 | 68.16 | 9.57 | 32.44 | 12/12 | 0.00026 | AC |
+| 2 | 48 | 60.62 | 8.89 | 35.56 | 12/12 | 0.01052 | Reconnected during prefill |
+| 3 | 52 | 55.38 | 7.98 | 39.39 | 12/12 | 0.03841 | Battery |
+
+These are single-run rates per depth. All depths produced 128 tokens on the database prompt, and the generated text differed across depths. On the generated GGUF fixture, each depth matched all 64 logits at five frontiers against explicit layer copies on both CPU and CUDA.

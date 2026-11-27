@@ -1,0 +1,195 @@
+--- a/src/llama-hparams.h
++++ b/src/llama-hparams.h
+@@ -373,6 +373,14 @@
+     float    dsv4_compress_rope_base   = 0.0f;
+     float    dsv4_hc_eps               = 0.0f;
+     std::array<uint32_t, LLAMA_MAX_LAYERS> dsv4_compress_ratios;
++
++    // The second visit gets its own logical layer and shares its first visit's tensors.
++    int32_t dsv41_repeat_at = 0;
++    int32_t dsv41_repeat_count = 0;
++    int32_t dsv41_first_visit(int32_t il) const {
++        return il >= dsv41_repeat_at && il < dsv41_repeat_at + dsv41_repeat_count
++                ? il - dsv41_repeat_count : il;
++    }
+
+     // deepseek41
+     std::array<int32_t, LLAMA_MAX_LAYERS> dsv41_kv_src;   // layer whose compressed KV this layer reads, -1 = none
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -1,5 +1,6 @@
+ #include "llama-model.h"
+
++#include "ds41_cache_policy.hpp"
+ #include "llama-arch.h"
+ #include "llama-ext.h"
+ #include "llama-hparams.h"
+@@ -1453,6 +1454,10 @@
+     layer_dev dev_output = {};
+     std::vector<layer_dev> dev_layer;
+
++    // GGML schedules each routed lookup by tensor identity. Both visits
++    // read the same backing bytes, but their routed expert IDs can differ.
++    std::vector<std::array<ggml_tensor, 3>> dsv41_experts;
++
+     bool has_tensor_overrides;
+
+     std::vector<float> tensor_split_owned;
+@@ -1818,6 +1823,14 @@
+     const int n_layer_all = hparams.n_layer_all;
+     const int n_gpu_layers = this->n_gpu_layers();
+
++    n1x_loop_window loop{};
++    if (arch == LLM_ARCH_DEEPSEEK41) {
++        loop = n1x_loop_range(hparams.n_layer());
++        if (loop.count < 0 || n_layer_all + loop.count > LLAMA_MAX_LAYERS) {
++            throw std::runtime_error("DS4_N1X_LOOP_LAYERS needs an inclusive zero-based range inside the model");
++        }
++    }
++
+     const bool use_mmap_buffer = true;
+
+     this->ml = &ml; // to be used by create_tensor() and load_arch_tensors()
+@@ -2300,7 +2313,80 @@
+         }
+     }
+
++    // YoungAi 7fb26cc src/core/core_v41_forward.c:181,312 carries hc and
++    // pre_mix through the stack. The experimental deviation visits a block
++    // twice at the same token positions, before cache/context allocation.
++    const auto apply_layer_loop = [&]() {
++        if (loop.count == 0) {
++            return;
++        }
++        const auto old = hparams;
++        const int at = loop.first + loop.count;
++        hparams.n_layer_all += loop.count;
++        hparams.dsv41_repeat_at = at;
++        hparams.dsv41_repeat_count = loop.count;
++        layers.resize(hparams.n_layer_all);
++        pimpl->dev_layer.resize(hparams.n_layer_all);
++        // Copy tensor handles and placements backwards to retain the source.
++        for (int il = hparams.n_layer_all - 1; il >= at; --il) {
++            layers[il] = layers[il - loop.count];
++            pimpl->dev_layer[il] = pimpl->dev_layer[il - loop.count];
++        }
++
++        pimpl->dsv41_experts.resize(loop.count);
++        for (int j = 0; j < loop.count; ++j) {
++            auto & layer = layers[at + j];
++            auto & headers = pimpl->dsv41_experts[j];
++            int k = 0;
++            for (auto ** weight : { &layer.ffn_gate_exps, &layer.ffn_up_exps, &layer.ffn_down_exps }) {
++                ggml_tensor * source = *weight;
++                auto * alias = &headers[k++];
++                *alias = *source;
++                const auto alias_policy = [&](auto & map) {
++                    const auto it = map.find(source);
++                    if (it != map.end()) {
++                        map.emplace(alias, it->second);
++                    }
++                };
++                alias_policy(prec_policy.prec_acc);
++                alias_policy(prec_policy.prec_src1);
++                alias_policy(w_scales);
++                alias_policy(hdmd.rot);
++                *weight = alias;
++            }
++        }
++        std::array<int, LLAMA_MAX_LAYERS> latest{};
++        for (int il = 0; il < (int) hparams.n_layer_all; ++il) {
++            const int src = il < at ? il : il - loop.count;
++            latest[src] = il;
++            const auto latest_visit = [&](int source) { return source < 0 ? -1 : latest[source]; };
++            // Raw KV belongs to this visit. Compressed KV and top-k come from
++            // the latest visit to the checkpoint's designated source layer.
++            hparams.kv_source_impl[il] = il;
++            hparams.dsv41_kv_src[il] = latest_visit(old.dsv41_kv_src[src]);
++            hparams.dsv41_topk_src[il] = latest_visit(old.dsv41_topk_src[src]);
++            hparams.dsv4_compress_ratios[il] = old.dsv4_compress_ratios[src];
++            hparams.is_swa_impl[il] = old.is_swa_impl[src];
++            hparams.rope_pattern[il] = old.rope_pattern[src];
++            hparams.n_head_arr[il] = old.n_head_arr[src];
++            hparams.n_head_kv_arr[il] = old.n_head_kv_arr[src];
++            hparams.n_ff_arr[il] = old.n_ff_arr[src];
++            hparams.n_ff_exp_arr[il] = old.n_ff_exp_arr[src];
++            hparams.n_expert_used_arr[il] = old.n_expert_used_arr[src];
++            hparams.swiglu_clamp_exp[il] = old.swiglu_clamp_exp[src];
++            hparams.swiglu_clamp_shexp[il] = old.swiglu_clamp_shexp[src];
++            // One token hash and one table gather per physical Engram module.
++            hparams.is_ple_impl[il] = hparams.dsv41_first_visit(il) == il && old.is_ple_impl[src];
++        }
++        if (old.dsv41_cand_src >= at) {
++            hparams.dsv41_cand_src += loop.count;
++        }
++        LLAMA_LOG_WARN("ds41: repeating GGUF layers %d-%d once (%u logical layers)\n",
++                       loop.first, at - 1, hparams.n_layer());
++    };
++
+     if (ml.no_alloc) {
++        apply_layer_loop();
+         return true;
+     }
+
+@@ -2330,6 +2416,7 @@
+     }
+
+     load_tensors_hadamard();
++    apply_layer_loop();
+
+     return true;
+ }
+--- a/src/models/deepseek41.cpp
++++ b/src/models/deepseek41.cpp
+@@ -229,6 +229,7 @@
+
+ // Engram n-gram hash (engram.py NgramHashState.forward)
+ int llama_model_deepseek41::engram_index(int il) const {
++    il = hparams.dsv41_first_visit(il);
+     if (hparams.ple_n_heads == 0 || !hparams.is_ple(il)) {
+         return -1;
+     }
+@@ -556,8 +557,9 @@
+                 std::max({ (n_tok + 63)/64, (INT64_C(1) << 26)/(n_idx_head*n_comp*n_stream), INT64_C(1) });
+
+             const int32_t cand_src = hparams.dsv41_cand_src;
+-            const bool    pick_blk = cand_src == il && cand_pin;              // level one: pick the candidate blocks
+-            const bool    use_blk  = cand_src >= 0 && cand_src < il && cand_sel; // level two: score inside them
++            const int32_t first_visit = hparams.dsv41_first_visit(il);
++            const bool    pick_blk = cand_src == first_visit && cand_pin;              // level one: pick the candidate blocks
++            const bool    use_blk  = cand_src >= 0 && cand_src < first_visit && cand_sel; // level two: score inside them
+             const int64_t bs       = hparams.dsv41_cand_block_size;
+             const int64_t n_blk    = pick_blk || use_blk ? (n_comp + bs - 1)/bs : 0;
+             GGML_ASSERT(!pick_blk || cand_pin->ne[0] == n_blk);
+--- a/src/llama-kv-cache-dsv4.cpp
++++ b/src/llama-kv-cache-dsv4.cpp
+@@ -20,6 +20,12 @@
+
+ static constexpr uint32_t DSV4_STATE_MAGIC         = 0x34565344; // DSV4
+ static constexpr uint32_t DSV4_STATE_VERSION       = 1;
++
++// Baseline snapshots keep their original header. Looped snapshots bind both
++// ends of the repeated block, even when two experiments have the same depth.
++static uint32_t dsv4_state_version(const llama_hparams & hp) {
++    return DSV4_STATE_VERSION | (uint32_t(hp.dsv41_repeat_at) << 8) | (uint32_t(hp.dsv41_repeat_count) << 20);
++}
+ static constexpr uint32_t DSV4_STATE_MODE_FULL     = 0;
+ static constexpr uint32_t DSV4_STATE_MODE_PARTIAL  = 1;
+ static constexpr uint32_t DSV4_K_CACHE_STATE_VER   = 2;
+@@ -1716,7 +1722,7 @@
+     const bool partial_only = flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+
+     const uint32_t magic   = DSV4_STATE_MAGIC;
+-    const uint32_t version = DSV4_STATE_VERSION;
++    const uint32_t version = dsv4_state_version(hparams_raw);
+     const uint32_t mode    = partial_only ? DSV4_STATE_MODE_PARTIAL : DSV4_STATE_MODE_FULL;
+
+     io.write(&magic,   sizeof(magic));
+@@ -1757,6 +1763,6 @@
+     if (magic != DSV4_STATE_MAGIC) {
+         throw std::runtime_error("DSV4 state magic mismatch");
+     }
+-    if (version != DSV4_STATE_VERSION) {
++    if (version != dsv4_state_version(hparams_raw)) {
+         throw std::runtime_error("DSV4 state version mismatch");
+     }

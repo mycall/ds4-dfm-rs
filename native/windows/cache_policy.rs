@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+mod layer_loop;
+
 // Layer quotas fitted on four coding requests at 75,264 MiB. The native caller
 // checks every cached layer before enabling this profile.
 const QUOTAS: [i32; 40] = [

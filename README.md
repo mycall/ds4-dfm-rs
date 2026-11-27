@@ -211,6 +211,76 @@ counts. The original Rust server and bench hosts keep their model loaders. Passi
 `-UnslothModel <first-shard.gguf>` to the build also checks a real expert on CUDA
 and runs the arithmetic smoke test with a 3 GiB Windows memory reserve.
 
+#### Native Varloop text runner on N1X
+
+`ds4-varloop.exe` is a single-sequence research runner for the variable-loop
+Inkling GGUF (`inkling2_loop`). Rust reads the GGUF and runs the layer graph.
+The CUDA backend uploads projection weights once and returns each matrix-vector
+product to Rust. Attention, routing, convolution and cross-pass state run on the
+host. The CPU backend provides a reference. Each pass has its own KV and
+convolution history. Omitting `--passes` uses the checkpoint's pass count.
+
+```powershell
+.\native\windows\build.ps1 -VarloopOnly
+.\target\n1x\ds4-varloop.exe -m $model --passes 3 --backend cuda -p "The capital of France is" -n 8
+```
+
+Use `--tokens 7,2,13` for token-ID input and output. Add `--dump-logits FILE`
+to save the vocabulary logits after each input token as little-endian FP32.
+`-p` takes raw completion text. The runner accepts F32, F16, BF16 and Q8_0
+tensor storage. Its correctness test generates small GGUFs locally and
+compares all logits with the pinned llama.cpp graph. With the N1X reference
+runtime already built and ARM64 Python, NumPy, PyYAML and tqdm installed,
+build the test oracle with `build.ps1 -VarloopOnly -Smoke` and run
+`python native/windows/test_varloop.py --cuda`. Full-checkpoint quality,
+throughput and serving remain unqualified.
+
+#### Experimental DeepSeek layer looping on N1X
+
+Set `DS4_N1X_LOOP_LAYERS` before loading the Unsloth DeepSeek 4.1 GGUF in
+the Rust CLI or N1X HTTP host. The endpoints are inclusive, zero-based GGUF
+layer numbers. For example, `15-18` runs layers 0–18, then 15–18 again,
+then 19–39. `DS4_N1X_LOOP_REPEATS` counts **extra** visits to that range.
+It defaults to one when a range is set. Zero runs the ordinary graph.
+Each visit uses the checkpoint weights, the same token positions, its own
+raw KV cache and the ordinary residual update. The output head runs after
+the full stack, so a generation step still chooses one next token.
+
+```powershell
+$env:DS4_N1X_LOOP_LAYERS = '15-18'
+$env:DS4_N1X_LOOP_REPEATS = '2'   # 48 logical layers on the 40-layer checkpoint
+.\ds4-n1x.ps1 run "What is two plus two?" -MaxTokens 8
+Remove-Item Env:DS4_N1X_LOOP_LAYERS, Env:DS4_N1X_LOOP_REPEATS
+```
+
+With a resident server, set the range and repeat count before `start`.
+With both unset, the server loads the ordinary 40-layer graph.
+To compare a loop with a small GGUF containing explicit
+copies of its layers, run `python native/windows/test_layer_loop.py --cuda`
+with ARM64 Python, NumPy, PyYAML and tqdm after the native build.
+
+On the 96 GiB N1X, set the GPU expert cache to 64 GiB to run the same layer
+repeat with more experts resident on the GPU.
+
+```powershell
+$env:DS4_N1X_LOOP_LAYERS = '15-18'
+$env:LLAMA_ARG_MOE_CACHE_MIB = '65536'
+.\ds4-n1x.ps1 start
+```
+
+Repeated visits share resident expert weights when they use the same GPU
+cache group and all cache misses run on the GPU. Each visit makes its own
+routing decision. Set `DS4_N1X_SHARE_LOOP_EXPERTS=0` before loading to
+measure separate entries. Clear the overrides before starting a default
+server. [Cache size, context and depth measurements](docs/benchmarks/n1x-cache-policies.md#repeated-deepseek-layers-and-active-context)
+
+For a quality A/B, start a fresh server for each range and run
+`python native/windows/eval-layer-loop.py questions.jsonl --url http://127.0.0.1:8081`
+against each one. Supply the same four-choice ARC records in JSONL format
+(`id`, `question`, `choices.label`, `choices.text`, `answerKey`). The scorer
+checks cold prefill against incremental decode and reports each answer's
+probability among the four choices, the predicted label and prefill time.
+
 The build updates its llama.cpp checkout automatically. To apply just the
 N1X source patches, run `.\native\windows\update-llama-source.ps1 -Src target/n1x/llama-src`.
 Run `python native/windows/test_llama_upgrade.py target/n1x/llama-src` to
