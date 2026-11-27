@@ -1,0 +1,33 @@
+{
+  "instructions": {
+    "files": [
+      "AGENTS.md"
+    ],
+    "n": 8192,
+    "sha256": "a7d98f6a9fc035d3f04c47c3300aa845524a5dd146addf3780e1cbfe5bedd92e"
+  },
+  "optimization": {
+    "files": [
+      "docs/prefill-decode-optimization-playbook.md"
+    ],
+    "n": 8192,
+    "sha256": "e39ad257ec6bb40c97bb57980d43da8140bd2e43c376321cefc46717c2d0d67f"
+  },
+  "profiling": {
+    "files": [
+      "docs/ds4-perf.md",
+      "docs/gb10-hardware.md"
+    ],
+    "n": 8192,
+    "sha256": "36c3dfdac9ad6577ef1f6f22eea964997a76f025021f78f29088a64e7d72045f"
+  },
+  "serving": {
+    "files": [
+      "README.md",
+      "docs/serving-contract.md",
+      "CONTRIBUTING.md"
+    ],
+    "n": 8192,
+    "sha256": "9f22ce32de355e07d75e9f0e6d158eb3d851af6e2d3b5921100c98e1509450fb"
+  }
+}

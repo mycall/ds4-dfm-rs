@@ -75,6 +75,17 @@ To check the default on the local model, run the integration test with the serve
 .\native\windows\test-prefill-reads.ps1 -Model $model
 ```
 
+### Four simultaneous 8,192-token prefills
+
+On `ce9b51fd`, four clients each submitted a different 8,192-token repository excerpt to a fresh server within 13 ms. Each requested one greedy completion token. Both policies ran once with the same input tokens, request order and four-slot settings described above. Every response reported zero cached prompt tokens. Each prompt produced the same completion across policies.
+
+| Seed policy | Server reads | MB per prompt token | All requests complete | Aggregate prompt tok/s | Time to first token by arrival order |
+|---|---:|---:|---:|---:|---|
+| Disabled | 1,496.68 GB | 45.68 | 364.09 s | 90.0 | 129, 220, 303, 364 s |
+| Equal (default) | 1,201.54 GB | 36.67 | 332.66 s | 98.5 | 108, 191, 272, 333 s |
+
+Equal seeding saved 295.14 GB (19.7%) and 31.43 seconds. All four slots were occupied before the first response. In the seeded run, slot 0 had processed 8,188 tokens when slot 1 first reported four. Aggregate throughput uses all 32,768 input tokens divided by elapsed client time. [Input hashes and sources](n1x-four-prefills/inputs.json) · [Default run](n1x-four-prefills/default.json) · [Disabled run](n1x-four-prefills/disabled.json)
+
 ## ARM64 host measurements
 
 Windows exposed NEON, dot product, I8MM, BF16, SVE and SVE2 on this N1X. An SVE loop measured a 16-byte vector length. Windows reported SME and SME2 unavailable. The release already builds the quantized CPU backend with `-mcpu=native`. [Windows processor feature detection](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocessorfeaturepresent)

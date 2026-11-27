@@ -1,0 +1,119 @@
+{
+  "policy": "disabled",
+  "wall_s": 364.09469450000324,
+  "aggregate_tps": 89.99856492003815,
+  "launch_spread_ms": 12.214599992148578,
+  "physical_bytes": 1496700652032,
+  "process_bytes": 1496680439088,
+  "read_ops": 205379,
+  "requests": [
+    {
+      "name": "instructions",
+      "sent": 153938.023709,
+      "done": 154067.2958158,
+      "ttft_s": 129.26862980000442,
+      "elapsed_s": 129.27210679999553,
+      "output": " the",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 8192,
+        "prompt_ms": 129262.41,
+        "prompt_per_token_ms": 15.779102783203125,
+        "prompt_per_second": 63.374959510657426,
+        "predicted_n": 1,
+        "predicted_ms": 0.001,
+        "predicted_per_token_ms": 0.0,
+        "predicted_per_second": 0.0
+      },
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 8192,
+        "total_tokens": 8193,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    },
+    {
+      "name": "optimization",
+      "sent": 153938.028471,
+      "done": 154157.8000374,
+      "ttft_s": 219.77114719999372,
+      "elapsed_s": 219.7715664000134,
+      "output": " is",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 8192,
+        "prompt_ms": 141875.196,
+        "prompt_per_token_ms": 17.31874951171875,
+        "prompt_per_second": 57.74088939408408,
+        "predicted_n": 1,
+        "predicted_ms": 0.001,
+        "predicted_per_token_ms": 0.0,
+        "predicted_per_second": 0.0
+      },
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 8192,
+        "total_tokens": 8193,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    },
+    {
+      "name": "profiling",
+      "sent": 153938.0320946,
+      "done": 154240.7522408,
+      "ttft_s": 302.7199674999865,
+      "elapsed_s": 302.72014620000846,
+      "output": " limited",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 8192,
+        "prompt_ms": 128848.92,
+        "prompt_per_token_ms": 15.7286279296875,
+        "prompt_per_second": 63.5783365510553,
+        "predicted_n": 1,
+        "predicted_ms": 0.001,
+        "predicted_per_token_ms": 0.0,
+        "predicted_per_second": 0.0
+      },
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 8192,
+        "total_tokens": 8193,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    },
+    {
+      "name": "serving",
+      "sent": 153938.0359236,
+      "done": 154302.1184035,
+      "ttft_s": 364.0823298000032,
+      "elapsed_s": 364.0824799000111,
+      "output": "https",
+      "timings": {
+        "cache_n": 0,
+        "prompt_n": 8192,
+        "prompt_ms": 102717.294,
+        "prompt_per_token_ms": 12.538732177734374,
+        "prompt_per_second": 79.75287978283384,
+        "predicted_n": 1,
+        "predicted_ms": 0.001,
+        "predicted_per_token_ms": 0.0,
+        "predicted_per_second": 0.0
+      },
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_tokens": 8192,
+        "total_tokens": 8193,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      }
+    }
+  ]
+}
